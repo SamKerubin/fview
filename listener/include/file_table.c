@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "file_table.h"
 
 struct _file* getitem(struct _file* table, const char* key) {

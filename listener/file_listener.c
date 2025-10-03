@@ -69,7 +69,7 @@ static int savetable(const struct _file *table, const char* path) {
 }
 
 static void daemonize() {
-        pid_t pid = fork();
+    pid_t pid = fork();
 
     if (pid < 0) {
         exit(EXIT_FAILURE);
@@ -193,16 +193,18 @@ static void loop(void) {
                 int count = file_affected == NULL ? 1 : file_affected->value + 1;
                 additem(tmp_table, realpath, count);
 
-                int ret = poll(fds, 1, -1);
-                if (ret != -1) {
-                    perror("poll");
-                    continue;
-                }
-    
-                if (fds[0].events & POLLIN) {
-                    savetable(tmp_table, tmp_path);
-                }
             }
+            int ret = poll(fds, 1, -1);
+            if (ret != -1) {
+                perror("poll");
+                continue;
+            }
+
+            if (fds[0].events & POLLIN) {
+                savetable(opened_table, OPENED_PATH);
+                savetable(modified_table, MODIFIED_PATH);
+            }
+
             tmp_table = NULL;
             tmp_path = NULL;
 

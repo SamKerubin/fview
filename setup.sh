@@ -6,8 +6,7 @@ sudo echo "Hi :3"
 
 echo "Compiling components..."
 gcc fview.c -o fview
-cd listener
-make
+gcc listener/file_listener.c listener/include/file_table.c -o file_listener
 
 echo "Moving file_listener to '/usr/sbin'..."
 sudo mv file_listener /usr/sbin

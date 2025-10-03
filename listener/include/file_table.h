@@ -9,7 +9,7 @@ struct _file {
     char key[PATH_LENGTH]; /* file name */
     int value; /* count of the event */
     UT_hash_handle hh;
-} _file;
+};
 
 struct _file* getitem(struct _file *table, const char* key);
 int additem(struct _file *table, const char* key, const int value);
