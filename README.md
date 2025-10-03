@@ -5,7 +5,11 @@ Its used to keep track of the usage of files in a directory.
 
 ## How does it work?
 
-Requires a directory path.
+Requires a directory path to open it.
+This command works along side a [daemon](listener/file_listener.c). You need to execute it as a startup
+process to start recording file operations.
+
+Please, execute the script `setup.sh` to make this command 100% functional.
 
 ```bash
 fview /home/user
