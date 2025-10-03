@@ -5,8 +5,9 @@ service_file="/etc/systemd/system/file_listener.service"
 sudo echo "Hi :3"
 
 echo "Compiling components..."
-make listener
 gcc fview.c -o fview
+cd listener
+make
 
 echo "Moving file_listener to '/usr/sbin'..."
 sudo mv file_listener /usr/sbin
