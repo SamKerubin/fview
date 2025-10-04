@@ -20,14 +20,15 @@
 #define BUFFER_SIZE 512
 #define FILE_LINE_SIZE 1024
 
+#define INTERVAL_SEC 1
+
 volatile sig_atomic_t running = 1;
 
 struct _file *opened_table;
 struct _file *modified_table;
 
-struct pollfd fds[2];
 int fan_fd;
-int tfd;
+struct pollfd fds[1];
 
 /* for SIGTERM */
 void handle_term(const int sig) {
@@ -100,7 +101,7 @@ static struct _file* loadtable(const char* path) {
     ssize_t bytes_read;
     int line_pos = 0;
 
-    while ((bytes_read = read(fd, content, sizeof(content)) > 0)) {
+    while ((bytes_read = read(fd, content, sizeof(content))) > 0) {
         for (ssize_t i = 0; i < bytes_read; i++) {
             if (content[i] == '\n' || line_pos >= FILE_LINE_SIZE - 1) {
                 line[line_pos] = '\0';
@@ -113,7 +114,7 @@ static struct _file* loadtable(const char* path) {
                 char *endptr;
                 int value = (int)strtol(value_str, &endptr, 10);
 
-                additem(tmp_table, key, value);
+                additem(&tmp_table, key, value);
             }
         }
     }
@@ -126,9 +127,6 @@ static int savetable(struct _file *table, const char* path) {
     if (table == NULL) {
         return EXIT_FAILURE;
     }
-
-    int count = HASH_COUNT(table);
-    syslog(LOG_INFO, "Count items -> %d", count);
 
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd == -1) {
@@ -157,61 +155,6 @@ static int savetable(struct _file *table, const char* path) {
     return EXIT_SUCCESS;
 }
 
-// static void daemonize() {
-//     pid_t pid = fork();
-
-//     if (pid < 0) {
-//         exit(EXIT_FAILURE);
-//     }
-
-//     if (pid > 0) {
-//         exit(EXIT_SUCCESS);
-//     }
-
-//     umask(0);
-//     if (chdir("/") < 0) {
-//         perror("chdir");
-//         exit(EXIT_FAILURE);
-//     }
-
-//     close(STDIN_FILENO);
-//     close(STDOUT_FILENO);
-//     close(STDERR_FILENO);
-
-//     if (setsid() < 0) {
-//         exit(EXIT_FAILURE);
-//     }
-
-//     int fd = open("/dev/null", O_RDWR);
-//     dup2(fd, STDIN_FILENO);
-//     dup2(fd, STDOUT_FILENO);
-//     dup2(fd, STDERR_FILENO);
-// }
-
-static void set_timer(void) {
-    tfd = timerfd_create(CLOCK_MONOTONIC, 0);
-    if (tfd == -1) {
-        syslog(LOG_ERR, "Error: Couldnt set timerfd timer. -> %s", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    struct itimerspec spec;
-    spec.it_interval.tv_sec = 1;
-    spec.it_interval.tv_nsec = 0;
-    spec.it_value.tv_sec = 1;
-    spec.it_value.tv_nsec = 0;
-
-    if (timerfd_settime(tfd, 0, &spec, NULL) == -1) {
-        perror("timerfd_settime");
-        exit(EXIT_FAILURE);
-    }
-
-    fds[0].fd = fan_fd;
-    fds[0].events = POLLIN;
-    fds[1].fd = tfd;
-    fds[1].events = POLLIN;
-}
-
 static void init_fanotify(const char *path) {
     fan_fd = fanotify_init(FAN_CLOEXEC | FAN_CLASS_NOTIF, O_RDONLY | O_LARGEFILE);
     if (fan_fd == -1) {
@@ -227,6 +170,9 @@ static void init_fanotify(const char *path) {
         syslog(LOG_ERR, "Error: Couldnt mark mount point to fanotify in '%s' -> %s", path, strerror(errno));
         exit(EXIT_FAILURE);
     }
+
+    fds[0].fd = fan_fd;
+    fds[0].events = POLLIN;
 }
 
 static int path_in_blacklist(const char* path) {
@@ -240,74 +186,58 @@ static int path_in_blacklist(const char* path) {
 }
 
 static void loop(void) {
+    time_t last_save = time(NULL);
     while(running) {
-        syslog(LOG_INFO, "Enter loop");
-        int ret = poll(fds, 2, -1);
-        syslog(LOG_INFO, "Poll -> %d", ret);
+        int ret = poll(fds, 1, 1000);
         if (ret == -1) {
             perror("poll");
             continue;
         }
 
-        if (fds[1].revents & POLLIN) {
-            syslog(LOG_INFO, "Timer expired");
-            uint64_t expirations;
-            read(tfd, &expirations, sizeof(expirations));
-            syslog(LOG_INFO, "Saving file tables into: '%s' - '%s'", OPENED_PATH, MODIFIED_PATH);
+        time_t now = time(NULL);
+        if (now - last_save >= INTERVAL_SEC) {
             savetable(opened_table, OPENED_PATH);
             savetable(modified_table, MODIFIED_PATH);
+            last_save = now;
         }
 
-        if (fds[0].revents & POLLIN) {
-            syslog(LOG_INFO, "Fanotify expired");
+        if (ret > 0 && fds[0].revents & POLLIN) {
             struct fanotify_event_metadata buffer[200];
-            ssize_t len = read(fan_fd, buffer, sizeof(buffer));
+            ssize_t len;
 
-            if (len < 0 && errno != EAGAIN) {
-                syslog(LOG_ERR, "Error: Couldnt read event metadata from file descriptior '%d'. -> %s", fan_fd, strerror(errno));
-                break;
-            }
+            do {
+                len = read(fan_fd, buffer, sizeof(buffer));
+                if (len <= 0) break;
 
-            if (len <= 0) 
-                continue;
-
-            struct fanotify_event_metadata *meta;
-            struct _file *tmp_table = NULL;
-            char *tmp_path = NULL;
-            syslog(LOG_INFO, "Reading fanotify buffer");
-            for (meta = buffer; FAN_EVENT_OK(meta, len); meta = FAN_EVENT_NEXT(meta, len)) {
-                if (meta->mask & FAN_OPEN || meta->mask & FAN_MODIFY) {
-                    const char *filepath = getfilepath(meta->fd);
-                    if (filepath == NULL) {
-                        close(meta->fd);
-                        continue;
-                    }
-
-                    syslog(LOG_INFO, "Action detected on file '%s'.", filepath);
-
-                    if (path_in_blacklist(filepath))
-                        continue;
-
-                    if (meta->mask & FAN_OPEN) {
-                        tmp_table = opened_table;
-                        tmp_path = OPENED_PATH;
-                    } else {
-                        tmp_table = modified_table;
-                        tmp_path = MODIFIED_PATH;
-                    }
-
-                    struct _file *file_affected = getitem(tmp_table, filepath);
-                    int count = file_affected == NULL ? 1 : file_affected->value + 1;
-                    additem(tmp_table, filepath, count);
-
+                if (len < 0 && errno != EAGAIN) {
+                    syslog(LOG_ERR, "Error: Couldnt read event metadata from file descriptior '%d'. -> %s", fan_fd, strerror(errno));
+                    break;
                 }
 
-                tmp_table = NULL;
-                tmp_path = NULL;
+                struct fanotify_event_metadata *meta;
+                for (meta = buffer; FAN_EVENT_OK(meta, len); meta = FAN_EVENT_NEXT(meta, len)) {
+                    if (meta->mask & FAN_OPEN || meta->mask & FAN_MODIFY) {
+                        const char *filepath = getfilepath(meta->fd);
+                        if (filepath == NULL) {
+                            close(meta->fd);
+                            continue;
+                        }
 
-                close(meta->fd);
-            }
-            syslog(LOG_INFO, "Loop finished");
+                        if (path_in_blacklist(filepath)) {
+                            close(meta->fd);
+                            continue;
+                        }
+
+                        struct _file **tmp_table = (meta->mask & FAN_OPEN) ? &opened_table : &modified_table;
+                        char *tmp_path = (meta->mask & FAN_OPEN) ? OPENED_PATH : MODIFIED_PATH;
+
+                        struct _file *file_affected = getitem(tmp_table, filepath);
+                        int count = file_affected ? file_affected->value + 1 : 1;
+                        additem(tmp_table, filepath, count);
+                    }
+                    close(meta->fd);
+                }
+            } while (len > 0);
         }
     }
 }
@@ -316,25 +246,20 @@ static void clean_loop(void) {
     syslog(LOG_INFO, "Daemon has stopped.");
     savetable(opened_table, OPENED_PATH);
     savetable(modified_table, MODIFIED_PATH);
-    clear_table(opened_table);
-    clear_table(modified_table);
+    clear_table(&opened_table);
+    clear_table(&modified_table);
     close(fan_fd);
-    close(tfd);
 }
 
 int main(void) {
-    // daemonize();
-    
     signal(SIGTERM, handle_term);
-    
+
     openlog("file_listener", LOG_PID | LOG_CONS, LOG_DAEMON);
-    syslog(LOG_INFO, "Daemon started.");
-    
-    set_timer();
-    
+    syslog(LOG_INFO, "Daemon has started.");
+
     opened_table = loadtable(OPENED_PATH);
     modified_table = loadtable(MODIFIED_PATH);
-
+    
     init_fanotify("/");
 
     loop();

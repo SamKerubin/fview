@@ -11,8 +11,8 @@ struct _file {
     UT_hash_handle hh;
 };
 
-struct _file* getitem(struct _file *table, const char* key);
-int additem(struct _file *table, const char* key, const int value);
-void clear_table(struct _file *table);
+struct _file* getitem(struct _file **table, const char *key);
+int additem(struct _file **table, const char* key, const int value);
+void clear_table(struct _file **table);
 
 #endif /* _FILE_TABLE_H_ */
