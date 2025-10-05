@@ -1,44 +1,43 @@
-#define _GNU_SOURCE
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <sys/fanotify.h>
+#define _GNU_SOURCE /* AT_FDCWD */
+#include <stdio.h> /* perror, snprintf, ssize_t */
+#include <stdlib.h> /* exit, EXIT_SUCCESS, EXIT_FAILURE, malloc, strtol */
+#include <unistd.h> /* readlink, read, write, close */
+#include <sys/fanotify.h> /* fanotify_init, fanotify_mark, fanotify_event_metadata, all the macros starting with FAN */
 #include <sys/stat.h>
-#include <syslog.h>
-#include <fcntl.h>
-#include <sys/timerfd.h>
-#include <string.h>
-#include <signal.h>
-#include <errno.h>
-#include <poll.h>
-#include "include/file_table.h"
+#include <syslog.h> /* syslog, openlog, closelog, all the macros starting with LOG */
+#include <time.h> /* time */
+#include <fcntl.h> /* open */
+#include <string.h> /* strtok, strdup, strerror, strcmp, strncmp, strlen */
+#include <signal.h> /* signal, SIGTERM */
+#include <errno.h> /* errno */
+#include <poll.h> /* poll, pollfd, POLLIN */
+#include "include/file_table.h" /* _file, additem, getitem, clean_table, PATH_LENGTH, HASH_ITER */
 
-/* path where log files are going to be saved and retrieved from */
-#define OPENED_PATH "/var/log/opfiles"
-#define MODIFIED_PATH "/var/log/modfiles"
+#define OPENED_PATH "/var/log/opfiles" /* log file path for storing in disk opening events */
+#define MODIFIED_PATH "/var/log/modfiles" /* log file path for storing in disk modifying events */
 
-#define BUFFER_SIZE 512
-#define FILE_LINE_SIZE 1024
+#define INTERVAL_SEC 5 /* timout for each time the process saves data */
 
-#define INTERVAL_SEC 1
+volatile sig_atomic_t running = 1; /* flag for the main loop */
 
-volatile sig_atomic_t running = 1;
+struct _file *opened_table; /* stores the opening events in memory */
+struct _file *modified_table; /* stores the modifying events in memory */
 
-struct _file *opened_table;
-struct _file *modified_table;
+int fan_fd; /* file descriptor of fanotify events */
+struct pollfd fds[1]; /* poll if fanotify recieves an event */
 
-int fan_fd;
-struct pollfd fds[1];
-
-/* for SIGTERM */
+/* handles SIGTERM, setting running flag to 0 */
 void handle_term(const int sig) {
+    syslog(LOG_INFO, "Signal %s, recieved, stopping process.", strsignal(sig));
     running = 0;
 }
-
+/* splits a string str using a delimiter
+    returns a string array where each element is a string token
+*/
 static char** splitstr(char *str, const char delimiter) {
     char **result;
     char *tmp = str;
-    char *last_delim;
+    char *last_delim = NULL;
 
     char delim[2];
     delim[0] = delimiter;
@@ -54,10 +53,15 @@ static char** splitstr(char *str, const char delimiter) {
         tmp++;
     }
 
+    if (last_delim != NULL && last_delim < (str + strlen(str) - 1))
+        count++;
+    else if (last_delim == NULL)
+        count = 1;
+
     count += last_delim < (str + strlen(str) - 1);
     count++;
 
-    result = malloc(sizeof(char *) * count);
+    result = malloc(sizeof(char *) * count + 1);
     if (result == NULL) {
         return NULL;
     }
@@ -69,11 +73,11 @@ static char** splitstr(char *str, const char delimiter) {
         token = strtok(0, delim);
     }
 
-    *(result + ind) = '\0';
-
+    *(result + ind) = NULL;
     return result;
 }
 
+/* given a file descriptor fd, returns the real file path of that descriptor */
 static char* getfilepath(const int fd) {
     static char realpath[PATH_LENGTH];
     char path[64];
@@ -87,6 +91,9 @@ static char* getfilepath(const int fd) {
     return realpath;
 }
 
+/* loads the table to be used in run-time
+    returns the content of the saved table, or NULL if its empty
+*/
 static struct _file* loadtable(const char* path) {
     struct _file *tmp_table = NULL;
 
@@ -96,26 +103,29 @@ static struct _file* loadtable(const char* path) {
         return NULL;
     }
 
-    char content[BUFFER_SIZE];
-    char line[FILE_LINE_SIZE];
+    char line[PATH_LENGTH];
     ssize_t bytes_read;
     int line_pos = 0;
 
-    while ((bytes_read = read(fd, content, sizeof(content))) > 0) {
+    while ((bytes_read = read(fd, line, sizeof(line))) > 0) {
         for (ssize_t i = 0; i < bytes_read; i++) {
-            if (content[i] == '\n' || line_pos >= FILE_LINE_SIZE - 1) {
+            if (line[i] == '\n' || line_pos >= PATH_LENGTH - 1) {
                 line[line_pos] = '\0';
                 char **splitted_line = splitstr(line, ':');
-                if (splitted_line == NULL)
+                if (splitted_line == NULL || splitted_line[0] == NULL || splitted_line[1] == NULL) {
+                    line_pos = 0;
                     continue;
+                }
 
                 char *key = splitted_line[0];
                 char *value_str = splitted_line[1];
                 char *endptr;
-                int value = (int)strtol(value_str, &endptr, 10);
+                long value = strtol(value_str, &endptr, 10);
 
                 additem(&tmp_table, key, value);
+                line_pos = 0;
             }
+            line_pos++;
         }
     }
 
@@ -123,7 +133,8 @@ static struct _file* loadtable(const char* path) {
     return tmp_table;
 }
 
-static int savetable(struct _file *table, const char* path) {
+/* saves current data into disk */
+static int savetable(struct _file *table, const char *path) {
     if (table == NULL) {
         return EXIT_FAILURE;
     }
@@ -138,10 +149,10 @@ static int savetable(struct _file *table, const char* path) {
     struct _file *item, *tmp;
     HASH_ITER(hh, table, item, tmp) {
         char *filename = item->key;
-        int count = item->value;
-        char entry[FILE_LINE_SIZE];
+        long count = item->value;
+        char entry[PATH_LENGTH];
 
-        snprintf(entry, sizeof(entry), "%s:%d\n", filename, count);
+        snprintf(entry, sizeof(entry), "%s:%ld\n", filename, count);
         ssize_t bytes_written = write(fd, entry, strlen(entry));
         if (bytes_written == -1) {
             syslog(LOG_ERR, "Error: Couldnt save table into '%s'. -> %s", path, strerror(errno));
@@ -155,6 +166,7 @@ static int savetable(struct _file *table, const char* path) {
     return EXIT_SUCCESS;
 }
 
+/* initalize fanotify in a specific path */
 static void init_fanotify(const char *path) {
     fan_fd = fanotify_init(FAN_CLOEXEC | FAN_CLASS_NOTIF, O_RDONLY | O_LARGEFILE);
     if (fan_fd == -1) {
@@ -175,7 +187,8 @@ static void init_fanotify(const char *path) {
     fds[0].events = POLLIN;
 }
 
-static int path_in_blacklist(const char* path) {
+/* checks if a path is inside the process blacklist (paths it must ignore) */
+static int path_in_blacklist(const char *path) {
     /* this will be getting better in the future */
     return strcmp(path, OPENED_PATH) == 0        || 
             strcmp(path, MODIFIED_PATH) == 0     ||
@@ -185,6 +198,7 @@ static int path_in_blacklist(const char* path) {
             strncmp(path, "/run/", 6) == 0;
 }
 
+/* main loop of the process */
 static void loop(void) {
     time_t last_save = time(NULL);
     while(running) {
@@ -232,7 +246,7 @@ static void loop(void) {
                         char *tmp_path = (meta->mask & FAN_OPEN) ? OPENED_PATH : MODIFIED_PATH;
 
                         struct _file *file_affected = getitem(tmp_table, filepath);
-                        int count = file_affected ? file_affected->value + 1 : 1;
+                        long count = file_affected ? file_affected->value + 1L : 1L;
                         additem(tmp_table, filepath, count);
                     }
                     close(meta->fd);
@@ -242,6 +256,7 @@ static void loop(void) {
     }
 }
 
+/* cleans the process memory after finishing the main loop */
 static void clean_loop(void) {
     syslog(LOG_INFO, "Daemon has stopped.");
     savetable(opened_table, OPENED_PATH);

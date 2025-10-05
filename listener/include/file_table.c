@@ -7,7 +7,7 @@ struct _file* getitem(struct _file **table, const char* key) {
     return item;
 }
 
-int additem(struct _file **table, const char *key, const int value) {
+int additem(struct _file **table, const char *key, const long value) {
     struct _file *item = NULL;
 
     HASH_FIND_STR(*table, key, item);
