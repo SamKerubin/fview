@@ -1,12 +1,11 @@
 #define _GNU_SOURCE /* AT_FDCWD */
 #include <stdio.h> /* perror, snprintf, ssize_t */
 #include <stdlib.h> /* exit, EXIT_SUCCESS, EXIT_FAILURE, malloc, strtol */
-#include <unistd.h> /* readlink, read, write, close */
+#include <unistd.h> /* readlink, open, read, write, close */
 #include <sys/fanotify.h> /* fanotify_init, fanotify_mark, fanotify_event_metadata, all the macros starting with FAN */
-#include <sys/stat.h>
 #include <syslog.h> /* syslog, openlog, closelog, all the macros starting with LOG */
 #include <time.h> /* time */
-#include <fcntl.h> /* open */
+#include <fcntl.h> /* all the macros starting with O */
 #include <string.h> /* strtok, strdup, strerror, strcmp, strncmp, strlen */
 #include <signal.h> /* signal, SIGTERM */
 #include <errno.h> /* errno */
@@ -15,8 +14,11 @@
 
 #define OPENED_PATH "/var/log/opfiles" /* log file path for storing in disk opening events */
 #define MODIFIED_PATH "/var/log/modfiles" /* log file path for storing in disk modifying events */
+#define BLACKLIST_PATH "/etc/file_listener.blacklist" /* file path for the blacklist file */
 
 #define INTERVAL_SEC 5 /* timout for each time the process saves data */
+
+#define BUFFER_SIZE 1024 /* size for buffers */
 
 volatile sig_atomic_t running = 1; /* flag for the main loop */
 
@@ -104,12 +106,13 @@ static struct _file* loadtable(const char* path) {
     }
 
     char line[PATH_LENGTH];
+    char content[BUFFER_SIZE];
     ssize_t bytes_read;
     int line_pos = 0;
 
-    while ((bytes_read = read(fd, line, sizeof(line))) > 0) {
+    while ((bytes_read = read(fd, content, sizeof(content))) > 0) {
         for (ssize_t i = 0; i < bytes_read; i++) {
-            if (line[i] == '\n' || line_pos >= PATH_LENGTH - 1) {
+            if (content[i] == '\n' || line_pos >= PATH_LENGTH - 1) {
                 line[line_pos] = '\0';
                 char **splitted_line = splitstr(line, ':');
                 if (splitted_line == NULL || splitted_line[0] == NULL || splitted_line[1] == NULL) {
@@ -124,8 +127,9 @@ static struct _file* loadtable(const char* path) {
 
                 additem(&tmp_table, key, value);
                 line_pos = 0;
+            } else {
+                line[line_pos++] = content[i];
             }
-            line_pos++;
         }
     }
 
@@ -189,13 +193,46 @@ static void init_fanotify(const char *path) {
 
 /* checks if a path is inside the process blacklist (paths it must ignore) */
 static int path_in_blacklist(const char *path) {
-    /* this will be getting better in the future */
-    return strcmp(path, OPENED_PATH) == 0        || 
+    /* paths that must be ignored regardless the blacklist file content */
+    if (strcmp(path, OPENED_PATH) == 0           || 
             strcmp(path, MODIFIED_PATH) == 0     ||
+            strcmp(path, BLACKLIST_PATH) == 0    ||
             strncmp(path, "/proc/", 6) == 0      ||
             strncmp(path, "/dev/", 6) == 0       ||
             strncmp(path, "/sys/", 6) == 0       ||
-            strncmp(path, "/run/", 6) == 0;
+            strncmp(path, "/run/", 6) == 0)
+        return 1;
+
+    int fd = open(BLACKLIST_PATH, O_RDONLY | O_CREAT, 0644);
+    if (fd == -1) {
+        syslog(LOG_ERR, "Error: Unable to read blacklist file. -> %s", strerror(errno));
+        return -1;
+    }
+
+    char line[PATH_LENGTH];
+    char content[BUFFER_SIZE];
+    ssize_t bytes_read;
+    int line_pos = 0;
+
+    while ((bytes_read = read(fd, content, sizeof(content))) > 0) {
+        for (ssize_t i = 0; i < bytes_read; i++) {
+            if (content[i] == '\n' || line_pos >= PATH_LENGTH - 1) {
+                line[line_pos] = '\0';
+
+                if (strcmp(path, line) == 0) {
+                    close(fd);
+                    return 1;
+                }
+
+                line_pos = 0;
+            } else {
+                line[line_pos++] = content[i];
+            }
+        }
+    }
+
+    close(fd);
+    return 0;
 }
 
 /* main loop of the process */
