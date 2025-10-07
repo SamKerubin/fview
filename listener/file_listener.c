@@ -63,7 +63,7 @@ static char** splitstr(char *str, const char delimiter) {
     count += last_delim < (str + strlen(str) - 1);
     count++;
 
-    result = malloc(sizeof(char *) * count + 1);
+    result = malloc((sizeof(char *) * count) + 1);
     if (result == NULL) {
         return NULL;
     }
@@ -114,19 +114,28 @@ static struct _file* loadtable(const char* path) {
         for (ssize_t i = 0; i < bytes_read; i++) {
             if (content[i] == '\n' || line_pos >= PATH_LENGTH - 1) {
                 line[line_pos] = '\0';
+
                 char **splitted_line = splitstr(line, ':');
                 if (splitted_line == NULL || splitted_line[0] == NULL || splitted_line[1] == NULL) {
                     line_pos = 0;
                     continue;
                 }
 
-                char *key = splitted_line[0];
-                char *value_str = splitted_line[1];
+                char key[PATH_LENGTH];
+                char value_str[PATH_LENGTH];
+                strcpy(key, splitted_line[0]);
+                strcpy(value_str, splitted_line[1]);
+
                 char *endptr;
                 long value = strtol(value_str, &endptr, 10);
 
                 additem(&tmp_table, key, value);
+                for (size_t i = 0; splitted_line[i] != NULL; i++) {
+                    free(splitted_line[i]);
+                }
+
                 free(splitted_line);
+
                 line_pos = 0;
             } else {
                 line[line_pos++] = content[i];
@@ -156,7 +165,7 @@ static int savetable(struct _file *table, const char *path) {
         char *filename = item->key;
         long count = item->value;
         char entry[PATH_LENGTH];
-
+        
         snprintf(entry, sizeof(entry), "%s:%ld\n", filename, count);
         ssize_t bytes_written = write(fd, entry, strlen(entry));
         if (bytes_written == -1) {
@@ -171,11 +180,17 @@ static int savetable(struct _file *table, const char *path) {
     return EXIT_SUCCESS;
 }
 
+static void clean_tables(void) {
+    clear_table(&opened_table);
+    clear_table(&modified_table);
+}
+
 /* initalize fanotify in a specific path */
 static void init_fanotify(const char *path) {
     fan_fd = fanotify_init(FAN_CLOEXEC | FAN_CLASS_NOTIF, O_RDONLY | O_LARGEFILE);
     if (fan_fd == -1) {
         syslog(LOG_ERR, "Error: Couldnt initialize fanotify. -> %s", strerror(errno));
+        clean_tables();
         exit(EXIT_FAILURE);
     }
 
@@ -185,6 +200,7 @@ static void init_fanotify(const char *path) {
                         AT_FDCWD,
                         path) == -1) {
         syslog(LOG_ERR, "Error: Couldnt mark mount point to fanotify in '%s' -> %s", path, strerror(errno));
+        clean_tables();
         exit(EXIT_FAILURE);
     }
 
@@ -293,13 +309,13 @@ static void loop(void) {
     }
 }
 
+
 /* cleans the process memory after finishing the main loop */
 static void clean_loop(void) {
     syslog(LOG_INFO, "Daemon has stopped.");
     savetable(opened_table, OPENED_PATH);
     savetable(modified_table, MODIFIED_PATH);
-    clear_table(&opened_table);
-    clear_table(&modified_table);
+    clean_tables();
     close(fan_fd);
 }
 
@@ -315,7 +331,11 @@ int main(void) {
     init_fanotify("/");
 
     loop();
+    fprintf(stderr, "Count:%d\n", HASH_COUNT(opened_table));
+    fprintf(stderr, "Count:%d\n", HASH_COUNT(modified_table));
     clean_loop();
+    fprintf(stderr, "Count:%d\n", HASH_COUNT(opened_table));
+    fprintf(stderr, "Count:%d\n", HASH_COUNT(modified_table));
 
     closelog();
     return EXIT_SUCCESS;

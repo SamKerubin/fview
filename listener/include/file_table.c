@@ -20,7 +20,7 @@ int additem(struct _file **table, const char *key, const long value) {
             return EXIT_FAILURE;
         }
 
-        strncpy(item->key, key, sizeof(item->key));
+        strcpy(item->key, key);
         item->value = value;
         HASH_ADD_STR(*table, key, item);
     } else {
