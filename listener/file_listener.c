@@ -12,9 +12,9 @@
 #include <poll.h> /* poll, pollfd, POLLIN */
 #include "include/file_table.h" /* _file, additem, getitem, clean_table, PATH_LENGTH, HASH_ITER */
 
-#define OPENED_PATH "/var/log/opfiles" /* log file path for storing in disk opening events */
-#define MODIFIED_PATH "/var/log/modfiles" /* log file path for storing in disk modifying events */
-#define BLACKLIST_PATH "/etc/file_listener.blacklist" /* file path for the blacklist file */
+#define OPENED_PATH "/var/log/file-listener/opfiles" /* log file path for storing in disk opening events */
+#define MODIFIED_PATH "/var/log/file-listener/modfiles" /* log file path for storing in disk modifying events */
+#define BLACKLIST_PATH "/var/log/file-listener/file_listener.blacklist" /* file path for the blacklist file */
 
 #define INTERVAL_SEC 5 /* timout for each time the process saves data */
 
@@ -126,6 +126,7 @@ static struct _file* loadtable(const char* path) {
                 long value = strtol(value_str, &endptr, 10);
 
                 additem(&tmp_table, key, value);
+                free(splitted_line);
                 line_pos = 0;
             } else {
                 line[line_pos++] = content[i];
@@ -219,7 +220,7 @@ static int path_in_blacklist(const char *path) {
             if (content[i] == '\n' || line_pos >= PATH_LENGTH - 1) {
                 line[line_pos] = '\0';
 
-                if (strcmp(path, line) == 0) {
+                if (strncmp(path, line, strlen(line)) == 0) {
                     close(fd);
                     return 1;
                 }
@@ -280,9 +281,8 @@ static void loop(void) {
                         }
 
                         struct _file **tmp_table = (meta->mask & FAN_OPEN) ? &opened_table : &modified_table;
-                        char *tmp_path = (meta->mask & FAN_OPEN) ? OPENED_PATH : MODIFIED_PATH;
-
                         struct _file *file_affected = getitem(tmp_table, filepath);
+
                         long count = file_affected ? file_affected->value + 1L : 1L;
                         additem(tmp_table, filepath, count);
                     }
