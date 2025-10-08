@@ -2,11 +2,9 @@
 
 compile_flags="-g -O0"
 service_file="/etc/systemd/system/file-listener.service"
+working_dir="/var/log/file-listener"
 
 sudo echo "Hi :3"
-
-echo "Making working directory on '/var/log'..."
-sudo mkdir -vp /var/log/file-listener
 
 echo "Compiling components..."
 gcc $compile_flags fview.c -o fview
@@ -48,12 +46,19 @@ sudo systemctl enable file-listener.service
 sudo systemctl start file-listener.service
 
 echo "Everything done! :D"
-echo -e "Restart your device and use \e[32mfview\e[0m for executing the command!"
+
 echo -e "\e[31m NOTE: recordings for file operations will only work with post-installation operations \e[0m"
 echo -e "\n"
+
 echo "Any problems starting file-listener daemon?"
 echo -e "Execute these commands:\n"
 echo -e "\e[32msudo chmod 755 /usr/sbin/file-listener\e[0m"
 echo -e "\e[32msudo restorecon /usr/sbin/file-listener\e[0m"
 echo -e "\e[32msudo systemctl daemon-reload\e[0m"
-echo -e "\e[32msudo systemctl start file-listener.service\e[0m"
+echo -e "\e[32msudo systemctl start file-listener.service\e[0m\n"
+
+echo -e "You might have problems executing \e[32maddflblk\e[0m"
+echo  -e "If thats the case, please execute this line:\n"
+echo -e "\e[32msudo chown \$USER:\$USER $working_dir/file_listener.blacklist\e[0m"
+
+echo -e "\nSide note: Components are compiled with the flags \e[32m$compile_flags\e[0m, feel free to use valgrind for debugging <3"
