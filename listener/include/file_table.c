@@ -23,6 +23,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <stdio.h>
 #include "file_table.h"
+
 /** 
  * @brief given a key, returns an item _file inside a table 
  *  
@@ -52,7 +53,7 @@ struct _file* getitem(struct _file **table, const char* key) {
  * @param value value of the item being added (_file->value)
  * @return exit code (0, 1)
  */
-int additem(struct _file **table, const char *key, const long value) {
+int additem(struct _file **table, const char *key, const uint32_t value) {
     struct _file *item = NULL;
 
     HASH_FIND_STR(*table, key, item);
@@ -60,18 +61,17 @@ int additem(struct _file **table, const char *key, const long value) {
         item = (struct _file *)malloc(sizeof(struct _file));
         if (item == NULL) {
             perror("malloc");
-            return EXIT_FAILURE;
+            return 0;
         }
 
         strcpy(item->key, key);
         item->value = value;
         HASH_ADD_STR(*table, key, item);
     } else {
-        long diff = abs(value - item->value);
-        item->value += diff;
+        item->value += value;
     }
 
-    return EXIT_SUCCESS;
+    return 1;
 }
 
 /** 

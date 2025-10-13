@@ -26,8 +26,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "uthash.h" /* UT_hash_handle, HASH_FIND_STR, HASH_ADD_STR, HASH_ITER */
 
-#define PATH_LENGTH 4096 /* buffer limit for paths */
-
 /**
  * @brief struct that stores general information about a file
  *  
@@ -37,13 +35,13 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  * it also uses UT_hash_handle struct for handling the hash table behavior
  */
 struct _file {
-    char key[PATH_LENGTH]; /** > file name */
-    long value; /** > count of the event */
+    char key[4096]; /** > file name */
+    uint32_t value; /** > count of the event */
     UT_hash_handle hh; /** hashable */
 };
 
 struct _file* getitem(struct _file **table, const char *key);
-int additem(struct _file **table, const char* key, const long value);
+int additem(struct _file **table, const char* key, const uint32_t value);
 void clear_table(struct _file **table);
 
 #endif /* _FILE_TABLE_H_ */

@@ -21,20 +21,22 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#define _GNU_SOURCE /* AT_FDCWD */
+#define _GNU_SOURCE
 #include <stdio.h> /* perror, snprintf, ssize_t, remove */
-#include <stdlib.h> /* exit, EXIT_SUCCESS, EXIT_FAILURE, malloc, strtol */
-#include <unistd.h> /* readlink, open, read, write, close */
+#include <stdlib.h> /* exit, EXIT_SUCCESS, EXIT_FAILURE, malloc, free, strtol */
+#include <unistd.h> /* readlink */
 #include <sys/fanotify.h> /* fanotify_init, fanotify_mark, fanotify_event_metadata, all the macros starting with FAN */
 #include <sys/stat.h> /* mkdir, stat */
 #include <syslog.h> /* syslog, openlog, closelog, all the macros starting with LOG */
 #include <time.h> /* time */
-#include <fcntl.h> /* creat, all the macros starting with O */
-#include <string.h> /* strtok, strdup, strerror, strcmp, strncmp, strlen */
-#include <signal.h> /* sigaction, sigemptyset, sa_handler, SIGTERM, SIGKILL */
+#include <fcntl.h> /* creat, O_RDONLY, O_LARGEFILE AT_FDCWD */
+#include <string.h> /* strerror, strcmp, strncmp */
+#include <signal.h> /* sigaction, sigemptyset, sa_handler, SIGTERM, SIGKILL, SIGUSER1 */
 #include <errno.h> /* errno */
 #include <poll.h> /* poll, pollfd, POLLIN */
-#include "include/file_table.h" /* _file, additem, getitem, clean_table, PATH_LENGTH, HASH_ITER */
+#include "include/file_table.h" /* _file, additem, getitem, clean_table, HASH_ITER */
+#include "include/strutils.h" /* splitstr */
+#include "include/fileutils.h" /* readfile, savefile, PATH_LENGTH */
 
 #define OPENED_PATH "/var/log/file-listener/opfiles" /* log file path for storing in disk opening events */
 #define MODIFIED_PATH "/var/log/file-listener/modfiles" /* log file path for storing in disk modifying events */
@@ -44,25 +46,32 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define TMP_MODIFIED_PATH "/tmp/file-listener/modfiles/%u.tmp" /* temporary log file for storing in disk modifying events */
 
 #define MAX_TMP_FILES 500 /* max temporary log files that can be created */
-#define MAX_TMP_SIZE 2000 /* max items a temporary file can store before opening a new temporary file */
+#define MAX_TMP_SIZE 750 /* max items a temporary file can store before opening a new temporary file */
 
 #define INTERVAL_SEC 5 /* timout for each time the process saves data */
-
-#define BUFFER_SIZE 1024 /* size for buffers */
 
 volatile sig_atomic_t running = 1; /* flag for the main loop */
 
 struct _file *opened_table; /* stores the opening events in memory */
 struct _file *modified_table; /* stores the modifying events in memory */
 
-u_int count_opening_tmp = 1; /* counter for the current amount of opening temporary files created */
-u_int count_modifying_tmp = 1; /* counter for the current amount of modifying temporary files created */
+uint16_t count_opening_tmp = 1; /* counter for the current amount of opening temporary files created */
+uint16_t count_modifying_tmp = 1; /* counter for the current amount of modifying temporary files created */
 
-u_int current_opening_size = 0; /* counter for the items the current opening temporary file has stored */
-u_int current_modifying_size = 0; /* counter for the itmes the current modifying temporary file has stored */
+uint16_t current_opening_size = 0; /* counter for the items the current opening temporary file has stored */
+uint16_t current_modifying_size = 0; /* counter for the itmes the current modifying temporary file has stored */
 
 int fan_fd; /* file descriptor of fanotify events */
 struct pollfd fds[1]; /* poll if fanotify recieves an event */
+
+/**
+ * auxiliar struct that stores the path it is looking for and
+ * a flag checking if it was found or not.
+ */
+struct blacklist {
+    const char *path; /** > path that is being looked for */
+    int found; /** > flag for marking if it was found */
+};
 
 /**
  * @brief signal handling
@@ -74,61 +83,8 @@ struct pollfd fds[1]; /* poll if fanotify recieves an event */
  * 
  */
 void handle_term(const int sig) {
-    syslog(LOG_INFO, "Signal %s, recieved, stopping process.", strsignal(sig));
+    syslog(LOG_INFO, "Signal %s recieved, stopping process.", strsignal(sig));
     running = 0;
-}
-
-/**
- * @brief splits a string using a delimiter
- *  
- * given a string, counts how many times a delimiter appears and
- * splits the string using strtok
- *  
- * @param str the string that is going to be splitted
- * @param delimitar character that acts as the splitter
- * @return alloc'ed array of the splitted tokens of the string
- */
-static char** splitstr(char *str, const char delimiter) {
-    char **result;
-    char *tmp = str;
-    char *last_delim = NULL;
-
-    char delim[2];
-    delim[0] = delimiter;
-    delim[1] = '\0';
-
-    size_t count = 0;
-
-    while (*tmp) {
-        if (delimiter == *tmp) {
-            count++;
-            last_delim = tmp;
-        }
-        tmp++;
-    }
-
-    if (last_delim != NULL && last_delim < (str + strlen(str) - 1))
-        count++;
-    else if (last_delim == NULL)
-        count = 1;
-
-    count += last_delim < (str + strlen(str) - 1);
-    count++;
-
-    result = malloc((sizeof(char *) * count) + 1);
-    if (result == NULL) {
-        return NULL;
-    }
-
-    size_t ind = 0;
-    char *token = strtok(str, delim);
-    while (token != NULL) {
-        *(result + ind++) = strdup(token);
-        token = strtok(0, delim);
-    }
-
-    *(result + ind) = NULL;
-    return result;
 }
 
 /**
@@ -154,6 +110,70 @@ static char* getfilepath(const int fd) {
 }
 
 /**
+ * @brief handles a file line read
+ * 
+ * when reached a line while reading a file, handles it
+ * by splitting using ':' as a delimiter
+ * 
+ * then adds that splitted line into a table
+ * 
+ * @param line line that is going to be processed
+ * @param arg table that is going to be modified
+ */
+static void loadtable_handler(char *line, void *arg) {
+    struct _file **table = (struct _file **)arg;
+
+    char **splitted_line;
+    size_t count = splitstr(line, ':', splitted_line);
+    if (splitted_line == NULL || splitted_line[0] == NULL || splitted_line[1] == NULL) {
+        return;
+    }
+
+    if (count <= 0)
+        return;
+
+    if (count != 2) {
+        for (size_t i = 0; splitted_line[i] != NULL; i++) {
+            free(splitted_line[i]);
+        }
+
+        free(splitted_line);
+        return;
+    }
+
+    char key[PATH_LENGTH];
+    char value_str[PATH_LENGTH];
+    strcpy(key, splitted_line[0]);
+    strcpy(value_str, splitted_line[1]);
+
+    char *endptr;
+    long tmp = strtol(value_str, &endptr, 10);
+    if (endptr == value_str) {
+        for (size_t i = 0; splitted_line[i] != NULL; i++) {
+            free(splitted_line[i]);
+        }
+
+        free(splitted_line);
+
+        syslog(LOG_ERR, "Hmmm, are you modifying the files, arent you?. Non-numeric value encountered.\n");
+        return;
+    }
+
+    if (tmp > UINT32_MAX)
+        tmp = UINT32_MAX;
+
+    uint32_t value = (uint32_t)tmp;
+
+    additem(table, key, value);
+    for (size_t i = 0; splitted_line[i] != NULL; i++) {
+        free(splitted_line[i]);
+    }
+
+    free(splitted_line);
+    return;
+}
+
+/**
  * @brief loads a file for storing its data
  *  
  * loads a file and parses its content
@@ -162,55 +182,10 @@ static char* getfilepath(const int fd) {
  * 
  * @param path path of the file that is going to be read
  * @param table table struct thats going to be updated with the items added
- * @return exit code (0, 1)
+ * @return 1 if successful, 0 if failed
  */
 static int loadtable(const char* path, struct _file **table) {
-    int fd = open(path, O_RDONLY | O_CREAT, 0644);
-    if (fd == -1) {
-        syslog(LOG_ERR, "Error: Couldnt load table from '%s'. -> %s", path, strerror(errno));
-        return EXIT_FAILURE;
-    }
-
-    char line[PATH_LENGTH];
-    char content[BUFFER_SIZE];
-    ssize_t bytes_read;
-    int line_pos = 0;
-
-    while ((bytes_read = read(fd, content, sizeof(content))) > 0) {
-        for (ssize_t i = 0; i < bytes_read; i++) {
-            if (content[i] == '\n' || line_pos >= PATH_LENGTH - 1) {
-                line[line_pos] = '\0';
-
-                char **splitted_line = splitstr(line, ':');
-                if (splitted_line == NULL || splitted_line[0] == NULL || splitted_line[1] == NULL) {
-                    line_pos = 0;
-                    continue;
-                }
-
-                char key[PATH_LENGTH];
-                char value_str[PATH_LENGTH];
-                strcpy(key, splitted_line[0]);
-                strcpy(value_str, splitted_line[1]);
-
-                char *endptr;
-                long value = strtol(value_str, &endptr, 10);
-
-                additem(table, key, value);
-                for (size_t i = 0; splitted_line[i] != NULL; i++) {
-                    free(splitted_line[i]);
-                }
-
-                free(splitted_line);
-
-                line_pos = 0;
-            } else {
-                line[line_pos++] = content[i];
-            }
-        }
-    }
-
-    close(fd);
-    return EXIT_SUCCESS;
+    return readfile(path, loadtable_handler, table);
 }
 
 /**
@@ -221,39 +196,36 @@ static int loadtable(const char* path, struct _file **table) {
  *  
  * @param table the struct that is going to be saved into disk
  * @param path path of the file that is going to be truncated
- * @return exit code (0, 1)
+ * @return 1 if successful, 0 if failed
  * 
  */
 static int savetable(struct _file **table, const char *path) {
     if (table == NULL) {
-        return EXIT_FAILURE;
+        return 0;
     }
 
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd == -1) {
-        syslog(LOG_ERR, "Error: Couldnt save table into '%s'. -> %s", path, strerror(errno));
-        perror("open");
-        return EXIT_FAILURE;
-    }
+    char **content = (char **)malloc(sizeof(char *) * (HASH_COUNT(*table) + 1));
+    size_t size = 0;
 
     struct _file *item, *tmp;
     HASH_ITER(hh, *table, item, tmp) {
         char *filename = item->key;
-        long count = item->value;
+        uint32_t count = item->value;
         char entry[PATH_LENGTH];
-        
-        snprintf(entry, sizeof(entry), "%s:%ld\n", filename, count);
-        ssize_t bytes_written = write(fd, entry, strlen(entry));
-        if (bytes_written == -1) {
-            syslog(LOG_ERR, "Error: Couldnt save table into '%s'. -> %s", path, strerror(errno));
-
-            close(fd);
-            return EXIT_FAILURE;
-        }
+        snprintf(entry, sizeof(entry), "%s:%u\n", filename, count);
+        content[size++] = strdup(entry);
     }
 
-    close(fd);
-    return EXIT_SUCCESS;
+    content[size] = NULL;
+
+    int r = savefile(path, content, 1);
+
+    for (size_t i = 0; i < size; i++) {
+        free(content[i]);
+    }
+
+    free(content);
+    return r;
 }
 
 /**
@@ -268,9 +240,9 @@ static int savetable(struct _file **table, const char *path) {
  * @param tmp_count count of how many temporary files are there
  * @return exit code (0, 1)
  */
-static int mergetmp(const char *path, const char *dest_path, u_int tmp_count) {
+static int mergetmp(const char *path, const char *dest_path, uint16_t tmp_count) {
     struct _file *merged_table = NULL;
-    for (u_int i = 1; i <= tmp_count; i++) {
+    for (uint16_t i = 1; i <= tmp_count; i++) {
         char realpath[PATH_LENGTH];
         snprintf(realpath, sizeof(realpath), path, i);
         
@@ -282,6 +254,19 @@ static int mergetmp(const char *path, const char *dest_path, u_int tmp_count) {
     clear_table(&merged_table);
 
     return r;
+}
+
+/**
+ * @brief custom signal handling
+ *  
+ * handles SIGUSR1 and merges both tables into permanent space on disk
+ * @param sig number of the signal recieved.
+ */
+void handle_usrsig(const int sig) {
+    syslog(LOG_INFO, "Signal %s recieved, merging content...", strsignal(sig));
+
+    mergetmp(TMP_OPENED_PATH, OPENED_PATH, count_opening_tmp);
+    mergetmp(TMP_MODIFIED_PATH, MODIFIED_PATH, count_modifying_tmp);
 }
 
 /* clears the content of both tables */
@@ -321,13 +306,30 @@ static void init_fanotify(const char *path) {
 }
 
 /**
+ * @brief checks if a line its inside the blacklist
+ * 
+ * comparing line to the path searched,
+ * if the path is equal to the line, it marks it as found
+ * 
+ * @param line the line that is going to be compared
+ * @param arg blacklist structure that stored both the path and found flag
+ */
+static void blacklist_handler(char *line, void *arg) {
+    struct blacklist *blk = (struct blacklist *)arg;
+
+    if (strncmp(blk->path, line, strlen(line)) == 0) {
+        blk->found = 1;
+    }
+}
+
+/**
  * @brief returns if a path its inside a blacklist
  *  
  * opens the path '/var/log/file-listener/file_listener.blacklist'
  * and reads its content looking for the existence of path
  *  
  * @param path path that is going to be checked if its inside the blacklist
- * @return exit code (0, 1)
+ * @return 1 if found, 0 if not found, -1 if failed
  */
 static int path_in_blacklist(const char *path) {
     /* paths that must be ignored regardless the blacklist file content */
@@ -342,36 +344,16 @@ static int path_in_blacklist(const char *path) {
             strncmp(path, "/run/", 6) == 0)
         return 1;
 
-    int fd = open(BLACKLIST_PATH, O_RDONLY | O_CREAT, 0644);
-    if (fd == -1) {
-        syslog(LOG_ERR, "Error: Unable to read blacklist file. -> %s", strerror(errno));
+    struct blacklist blk = {
+        .path = path,
+        .found = 0
+    };
+
+    if (!readfile(path, blacklist_handler, &blk)) {
         return -1;
     }
 
-    char line[PATH_LENGTH];
-    char content[BUFFER_SIZE];
-    ssize_t bytes_read;
-    int line_pos = 0;
-
-    while ((bytes_read = read(fd, content, sizeof(content))) > 0) {
-        for (ssize_t i = 0; i < bytes_read; i++) {
-            if (content[i] == '\n' || line_pos >= PATH_LENGTH - 1) {
-                line[line_pos] = '\0';
-
-                if (strncmp(path, line, strlen(line)) == 0) {
-                    close(fd);
-                    return 1;
-                }
-
-                line_pos = 0;
-            } else {
-                line[line_pos++] = content[i];
-            }
-        }
-    }
-
-    close(fd);
-    return 0;
+    return blk.found;
 }
 
 /** 
@@ -382,7 +364,8 @@ static int path_in_blacklist(const char *path) {
  * each time an event is registered, saves it in a table
  *  
  * when reached a certain amount of saves, loads all the data to a permanent file
- * */
+ * 
+ */
 static void loop(void) {
     time_t last_save = time(NULL);
     while(running) {
@@ -439,20 +422,19 @@ static void loop(void) {
                 }
 
                 struct _file **table = (meta->mask & FAN_OPEN) ? &opened_table : &modified_table;
-                u_int *content_count = (meta->mask & FAN_OPEN) ? &current_opening_size : &current_modifying_size;
+                uint16_t *content_count = (meta->mask & FAN_OPEN) ? &current_opening_size : &current_modifying_size;
                 
                 struct _file *file_affected = getitem(table, filepath);
-                
-                long count = file_affected ? file_affected->value + 1L : 1L;
-                additem(table, filepath, count);
-                
+
+                additem(table, filepath, 1U);
+
                 if (*content_count < MAX_TMP_SIZE) {
                     (*content_count)++;
                     close(meta->fd);
                     continue;
                 }
 
-                u_int *file_count = (meta->mask & FAN_OPEN) ? &count_opening_tmp : &count_modifying_tmp;
+                uint16_t *file_count = (meta->mask & FAN_OPEN) ? &count_opening_tmp : &count_modifying_tmp;
 
                 char *path = (meta->mask & FAN_OPEN) ? TMP_OPENED_PATH : TMP_MODIFIED_PATH;
                 char current_path[PATH_LENGTH];
@@ -501,6 +483,7 @@ static void clean_loop(void) {
  *  
  * - SIGKILL
  *  
+ *  also, sets a SIGUSR1 to handle extern needs of currently temporary data
  */
 static void setup_signals(void) {
     struct sigaction sig_act;
@@ -510,6 +493,13 @@ static void setup_signals(void) {
 
     sigaction(SIGINT, &sig_act, NULL);
     sigaction(SIGTERM, &sig_act, NULL);
+
+    struct sigaction usr_sig_act;
+    usr_sig_act.sa_handler = handle_usrsig;
+    sigemptyset(&usr_sig_act.sa_mask);
+    usr_sig_act.sa_flags = 0;
+
+    sigaction(SIGUSR1, &usr_sig_act, NULL);
 }
 
 /** 

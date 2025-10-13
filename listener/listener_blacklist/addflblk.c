@@ -1,16 +1,24 @@
 #define _POSIX_C_SOURCE 200809L /* lstat, strdup */
 #include <stdio.h> /* fprintf, stderr, stdout */
-#include <stdlib.h> /* EXIT_SUCCESS, EXIT_FAILURE, malloc, realloc, free */
+#include <stdlib.h> /* EXIT_SUCCESS, EXIT_FAILURE, malloc, realloc, free, calloc */
 #include <fcntl.h> /* all the macros starting with O */
 #include <unistd.h> /* open, read, write, close */
 #include <getopt.h> /* getopt_long, no_argument, optind, option */
 #include <sys/stat.h> /* stat, S_ISDIR */
 #include <string.h> /* strerror, snprintf, strcmp, strcpy, strlen */
 #include <errno.h> /* errno */
+#include "../include/fileutils.h" /* readfile, savefile, appendline */
 
 #define BUFFER_SIZE 1024
 
 #define BLACKLIST_PATH "/var/log/file-listener/file_listener.blacklist" /* file path for the blacklist file */
+
+struct blacklist_element {
+    char *path;
+    char ***list;
+    size_t *count;
+    int *found;
+};
 
 static void printhelp() {
     /* prints help message */
@@ -22,57 +30,56 @@ static void clear_list(char **list, size_t count) {
         free(list[i]);
     }
     free(list);
+}   
+
+static void blacklist_handler(char *line, void *arg) {
+    struct blacklist_element *blk = (struct blacklist_element *)arg;
+
+    if (strcmp(line, blk->path) == 0) {
+        *(blk->found) = 1;
+        return;
+    }
+
+    char **tmp = (char **)realloc(*(blk->list), sizeof(char *) * (*(blk->count) + 1));
+    if (tmp == NULL) {
+        perror("realloc");
+        return;
+    }
+
+    tmp[*(blk->count)] = (char *)malloc((sizeof(char) * strlen(line)) + 1);
+    if (tmp[*(blk->count)] == NULL) {
+        perror("malloc");
+        return;
+    }
+
+    strcpy(tmp[*(blk->count)], line);
+    *(blk->list) = tmp;
+    (*(blk->count))++;
+
 }
 
 /* reads the blacklist and returns a malloc'ed array of the paths read */
-static char** readblacklist(int fd, char *dirpath, char **list, size_t *count, int *found_path) {
-    if (list == NULL) {
-        list = (char **)malloc(sizeof(char *));
-        if (list == NULL) {
+static int readblacklist(char *dirpath, char ***list, size_t *count, int *found_path) {
+    if (*list == NULL) {
+        *list = (char **)calloc(1, sizeof(char *));
+        if (*list == NULL) {
             perror("malloc");
-            return NULL;
+            return 0;
         }
     }
 
-    char content[BUFFER_SIZE];
-    char line[FILENAME_MAX];
-    ssize_t bytes_read;
-    int line_pos = 0;
+    struct blacklist_element blk = {
+        .path = dirpath,
+        .list = list,
+        .count = count,
+        .found = found_path
+    };
 
-    while ((bytes_read = read(fd, content, sizeof(content))) > 0) {
-        for (ssize_t i = 0; i < bytes_read; i++) {
-            if (content[i] == '\n' || line_pos >= FILENAME_MAX - 1) {
-                line[line_pos] = '\0';
-
-                if (strcmp(line, dirpath) == 0) {
-                    *found_path = 1;
-                    break;
-                }
-
-                char **tmp = (char **)realloc(list, sizeof(char *) * (*count + 1));
-                if (tmp == NULL) {
-                    perror("realloc");
-                    return NULL;
-                }
-
-                tmp[*count] = (char *)malloc((sizeof(char) * strlen(line)) + 1);
-                if (tmp[*count] == NULL) {
-                    perror("malloc");
-                    return NULL;
-                }
-
-                strcpy(tmp[*count], line);
-                list = tmp;
-                (*count)++;
-
-                line_pos = 0;
-            } else {
-                line[line_pos++] = content[i];
-            }
-        }
+    if (!readfile(BLACKLIST_PATH, blacklist_handler, &blk)) {
+        return 0;
     }
 
-    return list;
+    return 1;
 }
 
 int main(int argc, char *argv[]) {
@@ -123,22 +130,14 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    int flags = O_RDWR | O_CREAT;
-    if (!remove) flags |= O_APPEND;
-
-    int fd = open(BLACKLIST_PATH, flags, 0644);
-    if (fd == -1) {
-        fprintf(stderr, "Error: Couldnt open blacklist file. -> %s\n", strerror(errno));
-        return EXIT_FAILURE;
-    }
-
     char **list = NULL;
     size_t count = 0;
     int found_path = 0;
 
     if (verbose) fprintf(stdout, "Reading blacklist looking for '%s'.\n", dirpath);
 
-    if (!(list = readblacklist(fd, dirpath, list, &count, &found_path))) {
+    readblacklist(dirpath, &list, &count, &found_path);
+    if (!list) {
         fprintf(stderr, "Error: Couldnt read blacklist content. -> %s\n", strerror(errno));
         return EXIT_FAILURE;
     }
@@ -155,18 +154,11 @@ int main(int argc, char *argv[]) {
             fprintf(stdout, "Trying to remove...\n");
         }
 
-        int trunc_fd = open(BLACKLIST_PATH, O_WRONLY | O_TRUNC, 0644);
-        close(fd);
-
-        for (size_t i = 0; i < count; i++) {
-            ssize_t bytes_written = write(trunc_fd, list[i], strlen(list[i]));
-            if (bytes_written == -1) {
-                fprintf(stderr, "Error: Couldnt save new paths into file. -> %s\n", strerror(errno));
-                clear_list(list, count);
-                return EXIT_FAILURE;
-            }
+        if (!savefile(BLACKLIST_PATH, list, 1)) {
+            fprintf(stderr, "Error: Couldnt remove path from blacklist. -> %s\n" ,strerror(errno));
+            clear_list(list, count);
+            return EXIT_FAILURE;
         }
-        close(trunc_fd);
 
         if (verbose) fprintf(stdout, "'%s' path removed from blacklist.\n", dirpath);
     } else {
@@ -183,9 +175,9 @@ int main(int argc, char *argv[]) {
 
         char buff[strlen(dirpath) + 2];
         snprintf(buff, sizeof(buff), "%s\n", dirpath);
-        if (write(fd, buff, sizeof(buff)) == -1) {
-            fprintf(stderr, "Error: Couldnt append path into blacklist content. -> %s\n", strerror(errno));
-            clear_list(list, count);
+
+        if (!appendline(BLACKLIST_PATH, buff, 0)) {
+            fprintf(stderr, "Error: Couldnt add path to blacklist. -> %s", strerror(errno));
             return EXIT_FAILURE;
         }
 
@@ -193,6 +185,5 @@ int main(int argc, char *argv[]) {
     }
 
     clear_list(list, count);
-    close(fd);
     return EXIT_SUCCESS;
 }
