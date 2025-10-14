@@ -35,9 +35,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *  
  * @param str the string that is going to be splitted
  * @param delimiter character that acts as the splitter
- * @return alloc'ed array of the splitted tokens of the string
+ * @param out alloc'ed array of the splitted tokens of the string
+ * @return count of tokens the splitted string has
  */
-static inline size_t splitstr(char *str, const char delimiter, char **out) {
+static inline size_t splitstr(char *str, const char delimiter, char ***out) {
     if (!str || !delimiter) {
         out = NULL;
         return 0;
@@ -69,7 +70,7 @@ static inline size_t splitstr(char *str, const char delimiter, char **out) {
 
     result = (char **)malloc((sizeof(char *) * count) + 1);          
     if (result == NULL) {
-        out = NULL;
+        *out = NULL;
         return 0;
     }
 
@@ -81,9 +82,9 @@ static inline size_t splitstr(char *str, const char delimiter, char **out) {
     }
 
     result[ind] = NULL; 
-    out = result;
+    *out = result;
 
-    return count;
+    return ind;
 }
 
 #endif

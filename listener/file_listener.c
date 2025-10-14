@@ -31,7 +31,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <time.h> /* time */
 #include <fcntl.h> /* creat, O_RDONLY, O_LARGEFILE AT_FDCWD */
 #include <string.h> /* strerror, strcmp, strncmp */
-#include <signal.h> /* sigaction, sigemptyset, sa_handler, SIGTERM, SIGKILL, SIGUSER1 */
+#include <signal.h> /* sigaction, sigemptyset, sa_handler, SIGTERM, SIGKILL, SIGUSER1, SIGUSER2 */
 #include <errno.h> /* errno */
 #include <poll.h> /* poll, pollfd, POLLIN */
 #include "include/file_table.h" /* _file, additem, getitem, clean_table, HASH_ITER */
@@ -65,13 +65,15 @@ int fan_fd; /* file descriptor of fanotify events */
 struct pollfd fds[1]; /* poll if fanotify recieves an event */
 
 /**
- * auxiliar struct that stores the path it is looking for and
- * a flag checking if it was found or not.
+ * stores in memory a blacklist entry 
+ * read from the blacklist file
  */
-struct blacklist {
-    const char *path; /** > path that is being looked for */
-    int found; /** > flag for marking if it was found */
+struct blacklist_entry {
+    char path[PATH_LENGTH]; /** > path of the entry */
+    UT_hash_handle hh; /** hashable */
 };
+
+struct blacklist_entry *blk_entries; /* table to store all the entries */
 
 /**
  * @brief signal handling
@@ -82,7 +84,7 @@ struct blacklist {
  * @param sig number of the signal recieved.
  * 
  */
-void handle_term(const int sig) {
+void terminate(const int sig) {
     syslog(LOG_INFO, "Signal %s recieved, stopping process.", strsignal(sig));
     running = 0;
 }
@@ -123,8 +125,8 @@ static char* getfilepath(const int fd) {
 static void loadtable_handler(char *line, void *arg) {
     struct _file **table = (struct _file **)arg;
 
-    char **splitted_line;
-    size_t count = splitstr(line, ':', splitted_line);
+    char **splitted_line = NULL;
+    size_t count = splitstr(line, ':', &splitted_line);
     if (splitted_line == NULL || splitted_line[0] == NULL || splitted_line[1] == NULL) {
         return;
     }
@@ -200,7 +202,7 @@ static int loadtable(const char* path, struct _file **table) {
  * 
  */
 static int savetable(struct _file **table, const char *path) {
-    if (table == NULL) {
+    if (*table == NULL) {
         return 0;
     }
 
@@ -262,7 +264,7 @@ static int mergetmp(const char *path, const char *dest_path, uint16_t tmp_count)
  * handles SIGUSR1 and merges both tables into permanent space on disk
  * @param sig number of the signal recieved.
  */
-void handle_usrsig(const int sig) {
+void mergeall(const int sig) {
     syslog(LOG_INFO, "Signal %s recieved, merging content...", strsignal(sig));
 
     mergetmp(TMP_OPENED_PATH, OPENED_PATH, count_opening_tmp);
@@ -306,6 +308,19 @@ static void init_fanotify(const char *path) {
 }
 
 /**
+ * clears the current content stored in memory by the blacklist
+ */
+static void clear_blacklist() {
+    struct blacklist_entry *item, *tmp;
+    HASH_ITER(hh, blk_entries, item, tmp) {
+        HASH_DEL(blk_entries, item);
+        free(item);
+    }
+
+    blk_entries = NULL;
+}
+
+/**
  * @brief checks if a line its inside the blacklist
  * 
  * comparing line to the path searched,
@@ -315,18 +330,41 @@ static void init_fanotify(const char *path) {
  * @param arg blacklist structure that stored both the path and found flag
  */
 static void blacklist_handler(char *line, void *arg) {
-    struct blacklist *blk = (struct blacklist *)arg;
+    struct blacklist_entry **blk_entries = (struct blacklist_entry **)arg;
 
-    if (strncmp(blk->path, line, strlen(line)) == 0) {
-        blk->found = 1;
+    struct blacklist_entry *item = (struct blacklist_entry *)malloc(sizeof(struct blacklist_entry));
+    if (!item) {
+        perror("malloc");
+        clear_blacklist();
+        return;
     }
+
+    char path[PATH_LENGTH];
+    strcpy(item->path, line);
+    strcpy(path, line);
+
+    HASH_ADD_STR(*blk_entries, path, item);
 }
+
+/**
+ * updates the content of the blacklist stored in memory
+ */
+static int update_blacklist() {
+    clear_blacklist();
+    return readfile(BLACKLIST_PATH, blacklist_handler, &blk_entries);
+}
+
+/* on signal recieved calls the method for updating the blacklist */
+static void updateblk(const int sig) {
+    syslog(LOG_INFO, "Signal %s recieved. Updating blacklist...", strsignal(sig));
+    update_blacklist();
+} 
 
 /**
  * @brief returns if a path its inside a blacklist
  *  
- * opens the path '/var/log/file-listener/file_listener.blacklist'
- * and reads its content looking for the existence of path
+ * reads the content stored in memory by the blacklist_entry struct
+ * returns whether or not a path is inside the blacklist
  *  
  * @param path path that is going to be checked if its inside the blacklist
  * @return 1 if found, 0 if not found, -1 if failed
@@ -344,16 +382,10 @@ static int path_in_blacklist(const char *path) {
             strncmp(path, "/run/", 6) == 0)
         return 1;
 
-    struct blacklist blk = {
-        .path = path,
-        .found = 0
-    };
 
-    if (!readfile(path, blacklist_handler, &blk)) {
-        return -1;
-    }
-
-    return blk.found;
+    struct blacklist_entry *entry;
+    HASH_FIND_STR(blk_entries, path, entry);
+    return (entry != NULL);
 }
 
 /** 
@@ -483,23 +515,31 @@ static void clean_loop(void) {
  *  
  * - SIGKILL
  *  
- *  also, sets a SIGUSR1 to handle extern needs of currently temporary data
+ *  sets up both SIGUSR1 and SIGUSR2 for handling events like:
+ * 
+ * - merging file content
+ * - updating blacklist
  */
 static void setup_signals(void) {
-    struct sigaction sig_act;
-    sig_act.sa_handler = handle_term;
-    sigemptyset(&sig_act.sa_mask);
-    sig_act.sa_flags = 0;
+    struct sigaction term_act;
+    term_act.sa_handler = terminate;
+    sigemptyset(&term_act.sa_mask);
+    term_act.sa_flags = 0;
 
-    sigaction(SIGINT, &sig_act, NULL);
-    sigaction(SIGTERM, &sig_act, NULL);
+    struct sigaction merger_act;
+    merger_act.sa_handler = mergeall;
+    sigemptyset(&merger_act.sa_mask);
+    merger_act.sa_flags = 0;
 
-    struct sigaction usr_sig_act;
-    usr_sig_act.sa_handler = handle_usrsig;
-    sigemptyset(&usr_sig_act.sa_mask);
-    usr_sig_act.sa_flags = 0;
-
-    sigaction(SIGUSR1, &usr_sig_act, NULL);
+    struct sigaction updater_act;
+    updater_act.sa_handler = updateblk;
+    sigemptyset(&updater_act.sa_mask);
+    updater_act.sa_flags = 0;
+    
+    sigaction(SIGINT, &term_act, NULL);
+    sigaction(SIGTERM, &term_act, NULL);
+    sigaction(SIGUSR1, &merger_act, NULL);
+    sigaction(SIGUSR2, &updater_act, NULL);
 }
 
 /** 
@@ -558,6 +598,7 @@ int main(void) {
     syslog(LOG_INFO, "Daemon has started.");
 
     setup_files();
+    update_blacklist();
 
     init_fanotify("/");
 

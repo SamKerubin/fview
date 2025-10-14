@@ -55,6 +55,11 @@ static inline int readfile(const char *path, void (*line_handler)(char *line, vo
         }
     }
 
+    if (line_pos > 0) {
+        line[line_pos] = '\0';
+        line_handler(line, arg);
+    }
+
     close(fd);
     return 1;
 }
