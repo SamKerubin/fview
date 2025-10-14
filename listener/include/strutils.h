@@ -40,7 +40,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 static inline size_t splitstr(char *str, const char delimiter, char ***out) {
     if (!str || !delimiter) {
-        out = NULL;
+        *out = NULL;
         return 0;
     }
 
