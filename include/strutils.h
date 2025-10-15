@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2025, Sam  https://github.com/SamKerubin/CLibs/tree/main/include/strutils.h
+Copyright (c) 2025, Sam  https://github.com/SamKerubin/CLibs/tree/main/fileutils/include/strutils.h
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without

@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2025, Sam  https://github.com/SamKerubin/CLibs/tree/main/include/fileutils.h
+Copyright (c) 2025, Sam  https://github.com/SamKerubin/CLibs/tree/main/fileutils/include/fileutils.h
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
