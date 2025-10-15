@@ -6,10 +6,16 @@ working_dir="/var/log/file-listener"
 
 sudo echo "Hi :3"
 
+echo "Installing shared libraries..."
+sudo cp -v lib/*.so /usr/local/lib
+sudo ldconfig
+echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/local.conf
+
+
 echo "Compiling components..."
-gcc $compile_flags fview.c -o fview
-gcc $compile_flags listener/file_listener.c listener/include/file_table.c -o file-listener
-gcc $compile_flags listener/listener_blacklist/addflblk.c -o addflblk
+gcc $compile_flags src/fview.c -Iinclude -lprocutils -o fview
+gcc $compile_flags src/listener/file_listener.c src/file_table.c -Iinclude -lfileutils -lstrutils -o file-listener
+gcc $compile_flags src/listener/listener_blacklist/addflblk.c -Iinclude -lprocutils -lfileutils -o addflblk
 
 echo "Giving executing permissions to file-listener..."
 sudo chmod -v 755 file-listener

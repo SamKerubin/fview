@@ -34,9 +34,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <signal.h> /* sigaction, sigemptyset, sa_handler, SIGTERM, SIGKILL, SIGUSER1, SIGUSER2 */
 #include <errno.h> /* errno */
 #include <poll.h> /* poll, pollfd, POLLIN */
-#include "include/file_table.h" /* _file, additem, getitem, clean_table, HASH_ITER */
-#include "include/strutils.h" /* splitstr */
-#include "include/fileutils.h" /* readfile, savefile, PATH_LENGTH */
+#include "file_table.h" /* _file, additem, getitem, clean_table, HASH_ITER */
+#include "strutils.h" /* splitstr */
+#include "fileutils.h" /* readfile, savefile, PATH_LENGTH */
 
 #define OPENED_PATH "/var/log/file-listener/opfiles" /* log file path for storing in disk opening events */
 #define MODIFIED_PATH "/var/log/file-listener/modfiles" /* log file path for storing in disk modifying events */

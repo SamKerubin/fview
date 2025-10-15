@@ -1,17 +1,19 @@
-#define _POSIX_C_SOURCE 200809L /* lstat, strdup */
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h> /* fprintf, stderr, stdout */
 #include <stdlib.h> /* EXIT_SUCCESS, EXIT_FAILURE, malloc, realloc, free, calloc */
 #include <fcntl.h> /* all the macros starting with O */
 #include <unistd.h> /* open, read, write, close */
 #include <getopt.h> /* getopt_long, no_argument, optind, option */
-#include <sys/stat.h> /* stat, S_ISDIR */
-#include <string.h> /* strerror, snprintf, strcmp, strcpy, strlen */
+#include <sys/stat.h> /* lstat, stat, S_ISDIR */
+#include <string.h> /* strerror, snprintf, strcmp, strcpy, strlen, strdup */
 #include <errno.h> /* errno */
-#include "../include/fileutils.h" /* readfile, savefile, appendline */
-
-#define BUFFER_SIZE 1024
+#include <signal.h> /* kill, SIGUSR2 */
+#include "fileutils.h" /* readfile, savefile, appendline */
+#include "procutils.h" /* getpid_by_name */
 
 #define BLACKLIST_PATH "/var/log/file-listener/file_listener.blacklist" /* file path for the blacklist file */
+
+#define FILE_LISTENER_NAME "file-listener"
 
 struct blacklist_element {
     char *path;
@@ -80,6 +82,16 @@ static int readblacklist(char *dirpath, char ***list, size_t *count, int *found_
     }
 
     return 1;
+}
+
+static void emit_signal() {
+    int listener_pid = getpid_by_name(FILE_LISTENER_NAME);
+    if (listener_pid == -1) {
+        fprintf(stderr, "Error: Couldnt emit signal to '%s'. -> %s\n", FILE_LISTENER_NAME, strerror(errno));
+        fprintf(stderr, "If the error persist, try checking if the process is running.\n");
+    }
+
+    kill(listener_pid, SIGUSR2);
 }
 
 int main(int argc, char *argv[]) {
@@ -183,6 +195,8 @@ int main(int argc, char *argv[]) {
 
         if (verbose) fprintf(stdout, "'%s' path appended to blacklist.\n", dirpath);
     }
+
+    emit_signal();
 
     clear_list(list, count);
     return EXIT_SUCCESS;

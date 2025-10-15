@@ -21,7 +21,9 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include <stdio.h>
+#include <stdio.h> /* perror */
+#include <stdlib.h> /* malloc, free */
+#include <string.h> /* strcpy */
 #include "file_table.h"
 
 /** 
