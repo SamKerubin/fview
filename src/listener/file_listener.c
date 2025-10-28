@@ -35,7 +35,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <errno.h> /* errno */
 #include <stdint.h> /* uint32_t, uint16_t, UINT32_MAX */
 #include <poll.h> /* poll, pollfd, POLLIN */
-#include "file_table.h" /* _file, additem, getitem, clean_table, HASH_ITER */
+#include "file_table.h" /* _file, additem, clean_table, HASH_ITER */
 #include "strutils.h" /* splitstr */
 #include "fileutils.h" /* readfile, savefile, PATH_LENGTH */
 
@@ -47,7 +47,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define TMP_MODIFIED_PATH "/tmp/file-listener/modfiles/%u.tmp" /* temporary log file for storing in disk modifying events */
 
 #define MAX_TMP_FILES 500 /* max temporary log files that can be created */
-#define MAX_TMP_SIZE 100 /* max items a temporary file can store before opening a new temporary file */
+#define MAX_TMP_SIZE 750 /* max items a temporary file can store before opening a new temporary file */
 
 #define INTERVAL_SEC 5 /* timout for each time the process saves data */
 
@@ -359,28 +359,15 @@ static void loop(void) {
 
                 uint16_t *content_count = (meta->mask & FAN_OPEN) ? &current_opening_size : &current_modifying_size;
 
-                struct _file *file = NULL;
-                getitem(&file_table, filepath, &file);
-                if (!file) {
-                    additem(&file_table, filepath, 1U, event);
-                    (*content_count)++;
-                } else {
-                    if (event == F_OPENED) {
-                        file->opening += 1U;
-                    } else {
-                        file->modifying += 1U;
-                    }
-                }
+                additem(&file_table, filepath, 1U, event);
 
                 free(filepath);
 
                 if (*content_count < MAX_TMP_SIZE) {
+                    (*content_count)++;
                     close(meta->fd);
                     continue;
                 }
-
-                uint16_t *file_count = (meta->mask & FAN_OPEN) ? &count_opening_tmp : &count_modifying_tmp;
-                char *path = (meta->mask & FAN_OPEN) ? TMP_OPENED_PATH : TMP_MODIFIED_PATH;
 
                 char current_oppath[PATH_LENGTH];
                 char current_modpath[PATH_LENGTH];
@@ -392,10 +379,12 @@ static void loop(void) {
                 clear_table(&file_table);
 
                 *content_count = 0;
-
+                
+                uint16_t *file_count = (meta->mask & FAN_OPEN) ? &count_opening_tmp : &count_modifying_tmp;
                 if (*file_count < MAX_TMP_FILES) {
                     (*file_count)++;
                 } else {
+                    char *path = (meta->mask & FAN_OPEN) ? TMP_OPENED_PATH : TMP_MODIFIED_PATH;
                     mergetmp(path, OPENED_PATH, MODIFIED_PATH, file_count);
                 }
 
@@ -423,12 +412,7 @@ static void loadtable_handler(char *line, void *arg) {
     }
 
     if (count != 2) {
-        for (size_t i = 0; splitted_line[i] != NULL; i++) {
-            free(splitted_line[i]);
-        }
-
-        free(splitted_line);
-        return;
+        goto clean_splitted;
     }
 
     char key[PATH_LENGTH];
@@ -439,14 +423,8 @@ static void loadtable_handler(char *line, void *arg) {
     char *endptr;
     long tmp = strtol(value_str, &endptr, 10);
     if (endptr == value_str) {
-        for (size_t i = 0; splitted_line[i] != NULL; i++) {
-            free(splitted_line[i]);
-        }
-
-        free(splitted_line);
-
         syslog(LOG_ERR, "Hmmm, are you modifying the files, arent you?. Non-numeric value encountered.\n");
-        return;
+        goto clean_splitted;
     }
 
     if (tmp > UINT32_MAX)
@@ -456,24 +434,15 @@ static void loadtable_handler(char *line, void *arg) {
 
     int is_opening = strncmp(loader->readingpath, TMP_OPENED_PATH, 21) == 0;
     enum _event event = (is_opening) ? F_OPENED : F_MODIFIED;
+    additem(loader->table, key, value, event);
 
-    struct _file *file = NULL;
-    getitem(loader->table, key, &file);
-    if (!file) {
-        additem(loader->table, key, value, event);
-    } else {
-        if (event == F_OPENED) {
-            file->opening += value;
-        } else {
-            file->modifying += value;
+
+    clean_splitted:
+        for (size_t i = 0; splitted_line[i] != NULL; i++) {
+            free(splitted_line[i]);
         }
-    }
 
-    for (size_t i = 0; splitted_line[i] != NULL; i++) {
-        free(splitted_line[i]);
-    }
-
-    free(splitted_line);
+        free(splitted_line);
 }
 
 static int loadtable(const char* path, struct loader_element *loader) {
@@ -496,11 +465,13 @@ static size_t get_file_content(struct _file **table, char ***out, enum _event ev
         struct stat st;
         if (stat(filename, &st) == -1) {
             HASH_DEL(*table, item);
+            free(item);
             continue;
         }
 
         if (path_in_blacklist(filename)) {
             HASH_DEL(*table, item);
+            free(item);
             continue;
         }
 
@@ -548,6 +519,8 @@ static int savetable(struct _file **table, const char *op_path, const char *mod_
         return 0;
     }
 
+    int r_op, r_mod = -1;
+
     char **op_content = NULL;
     get_file_content(table, &op_content, F_OPENED);
     if (!op_content) {
@@ -560,8 +533,8 @@ static int savetable(struct _file **table, const char *op_path, const char *mod_
         goto clean_content;
     }
 
-    int r_op = savefile(op_path, op_content, 1);
-    int r_mod = savefile(mod_path, mod_content, 1);
+    r_op = savefile(op_path, op_content, 1);
+    r_mod = savefile(mod_path, mod_content, 1);
 
     clean_content:
         for (size_t i = 0; op_content[i]; i++) {

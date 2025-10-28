@@ -26,43 +26,33 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <string.h> /* strcpy */
 #include "file_table.h"
 
-int added = 0;
-
-int getitem(struct _file **table, const char *filename, struct _file **out) {
-    HASH_FIND_STR(*table, filename, *out);
-}
-
 int additem(struct _file **table, const char *filename, const uint32_t value, enum _event event) {
     if (!filename || *filename == '\0') {
         return 0;
     }
 
     struct _file *item = NULL;
-    if (getitem(table, filename, &item)) {
-        return 0;
-    }
+    HASH_FIND_STR(*table, filename, item);
+    if (!item) {
+        item = (struct _file *)malloc(sizeof(struct _file));
+        if (item == NULL) {
+            perror("malloc");
+            return 0;
+        }
 
-    item = (struct _file *)malloc(sizeof(struct _file));
-    if (item == NULL) {
-        perror("malloc");
-        return 0;
+        strncpy(item->key, filename, sizeof(item->key) - 1);
+        item->key[sizeof(item->key) - 1] = '\0';
+        item->opening = 0U;
+        item->modifying = 0U;
+        HASH_ADD_STR(*table, key, item);
     }
-
-    strncpy(item->key, filename, sizeof(item->key) - 1);
-    item->key[sizeof(item->key) - 1] = '\0';
-    item->opening = 0U;
-    item->modifying = 0U;
 
     if (event == F_OPENED) {
-        item->opening = value;
+        item->opening += value;
     } else if (event == F_MODIFIED) {
-        item->modifying = value;
+        item->modifying += value;
     }
 
-    HASH_ADD_STR(*table, key, item);
-    added++;
-
-    if (HASH_COUNT(*table) != added) fprintf(stdout, "add %d:%d - %d\n", added, HASH_COUNT(*table), (int)event);
 
     return 1;
 }
@@ -70,15 +60,9 @@ int additem(struct _file **table, const char *filename, const uint32_t value, en
 void clear_table(struct _file **table) {
     struct _file *item, *tmp;
 
-    if (HASH_COUNT(*table) != added) fprintf(stdout, "clear %d:%d\n", added, HASH_COUNT(*table));
-
     HASH_ITER(hh, *table, item, tmp) {
         HASH_DEL(*table, item);
         free(item);
-        added--;
     }
-    
-    if (HASH_COUNT(*table) != added) fprintf(stdout, "clear %d:%d\n", added, HASH_COUNT(*table));
-
     *table = NULL;
 }

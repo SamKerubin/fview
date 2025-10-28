@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2025, Sam  https://github.com/SamKerubin/CLibs/tree/main/fileutils/include/procutils.h
+Copyright (c) 2025, Sam  https://github.com/SamKerubin/CLibs/blob/main/procutils/include/procutils.h
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without

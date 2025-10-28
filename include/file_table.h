@@ -51,11 +51,6 @@ enum _event {
 };
 
 /**
- * 
- */
-int getitem(struct _file **table, const char *filename, struct _file **out);
-
-/**
  *  @brief given a key and a value, adds it to a table
  *  
  * adds a value to a given table struct, if key is already on the table
