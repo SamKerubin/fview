@@ -26,69 +26,59 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <string.h> /* strcpy */
 #include "file_table.h"
 
-/** 
- * @brief given a key, returns an item _file inside a table 
- *  
- * searchs for an item stored inside a table that maches a key
- * returns that item if found
- *  
- * @param table table struct where the item is going to be searched
- * @param key key of the item being searched
- * @return returns a copy of the item if found, if not, returns NULL
- */
-struct _file* getitem(struct _file **table, const char* key) {
-    struct _file *item = NULL;
-    HASH_FIND_STR(*table, key, item);
-    return item;
+int added = 0;
+
+int getitem(struct _file **table, const char *filename, struct _file **out) {
+    HASH_FIND_STR(*table, filename, *out);
 }
 
-/**
- *  @brief given a key and a value, adds it to a table
- *  
- * adds a value to a given table struct, if key is already on the table
- * updates it to value
- *  
- * if its not in the table already, adds it normally
- *  
- * @param table table struct where the item is going to be added
- * @param key key of the item being added (_file->key)
- * @param value value of the item being added (_file->value)
- * @return exit code (0, 1)
- */
-int additem(struct _file **table, const char *key, const uint32_t value) {
-    struct _file *item = NULL;
-
-    HASH_FIND_STR(*table, key, item);
-    if (item == NULL) {
-        item = (struct _file *)malloc(sizeof(struct _file));
-        if (item == NULL) {
-            perror("malloc");
-            return 0;
-        }
-
-        strcpy(item->key, key);
-        item->value = value;
-        HASH_ADD_STR(*table, key, item);
-    } else {
-        item->value += value;
+int additem(struct _file **table, const char *filename, const uint32_t value, enum _event event) {
+    if (!filename || *filename == '\0') {
+        return 0;
     }
+
+    struct _file *item = NULL;
+    if (getitem(table, filename, &item)) {
+        return 0;
+    }
+
+    item = (struct _file *)malloc(sizeof(struct _file));
+    if (item == NULL) {
+        perror("malloc");
+        return 0;
+    }
+
+    strncpy(item->key, filename, sizeof(item->key) - 1);
+    item->key[sizeof(item->key) - 1] = '\0';
+    item->opening = 0U;
+    item->modifying = 0U;
+
+    if (event == F_OPENED) {
+        item->opening = value;
+    } else if (event == F_MODIFIED) {
+        item->modifying = value;
+    }
+
+    HASH_ADD_STR(*table, key, item);
+    added++;
+
+    if (HASH_COUNT(*table) != added) fprintf(stdout, "add %d:%d - %d\n", added, HASH_COUNT(*table), (int)event);
 
     return 1;
 }
 
-/** 
- * @brief frees all the values stored in a table
- *  
- * given a table, frees all the memory alloc'ed inside of it
- * @param table table struct thats going to be freed
- */
 void clear_table(struct _file **table) {
     struct _file *item, *tmp;
+
+    if (HASH_COUNT(*table) != added) fprintf(stdout, "clear %d:%d\n", added, HASH_COUNT(*table));
 
     HASH_ITER(hh, *table, item, tmp) {
         HASH_DEL(*table, item);
         free(item);
+        added--;
     }
+    
+    if (HASH_COUNT(*table) != added) fprintf(stdout, "clear %d:%d\n", added, HASH_COUNT(*table));
 
     *table = NULL;
 }

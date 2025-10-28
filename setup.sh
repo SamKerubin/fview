@@ -11,7 +11,6 @@ sudo cp -v lib/*.so /usr/local/lib
 sudo ldconfig
 echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/local.conf
 
-
 echo "Compiling components..."
 gcc $compile_flags src/fview.c -Iinclude -lprocutils -o fview
 gcc $compile_flags src/listener/file_listener.c src/file_table.c -Iinclude -lfileutils -lstrutils -o file-listener

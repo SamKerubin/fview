@@ -1,5 +1,7 @@
 # fview
 
+_NOTE: this README might not be up to date_
+
 `fview` its command for a Linux-based OS.
 Its used to keep track of the usage of files in a directory.
 

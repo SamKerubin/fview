@@ -24,6 +24,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifndef _FILE_TABLE_H_
 #define _FILE_TABLE_H_
 
+#include <stdint.h> /* uint32_t */
 #include "uthash.h" /* UT_hash_handle, HASH_FIND_STR, HASH_ADD_STR, HASH_ITER */
 
 /**
@@ -36,12 +37,46 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 struct _file {
     char key[4096]; /** > file name */
-    uint32_t value; /** > count of the event */
+    uint32_t opening; /** > count of the opening event */
+    uint32_t modifying; /** > count of the modifying event */
     UT_hash_handle hh; /** hashable */
 };
 
-struct _file* getitem(struct _file **table, const char *key);
-int additem(struct _file **table, const char* key, const uint32_t value);
+/**
+ * enum to describe which event has occured
+ */
+enum _event {
+    F_OPENED, /** > when a file is opened */
+    F_MODIFIED /** > when a file is modified */
+};
+
+/**
+ * 
+ */
+int getitem(struct _file **table, const char *filename, struct _file **out);
+
+/**
+ *  @brief given a key and a value, adds it to a table
+ *  
+ * adds a value to a given table struct, if key is already on the table
+ * updates it to value
+ *  
+ * if its not in the table already, adds it normally
+ *  
+ * @param table table struct where the item is going to be added
+ * @param key key of the item being added (_file->key)
+ * @param value value of the item being added (_file->value)
+ * @param event type of the event (modified, openened)
+ * @return exit code (0, 1)
+ */
+int additem(struct _file **table, const char *filename, const uint32_t value, enum _event event);
+
+/** 
+ * @brief frees all the values stored in a table
+ *  
+ * given a table, frees all the memory alloc'ed inside of it
+ * @param table table struct thats going to be freed
+ */
 void clear_table(struct _file **table);
 
 #endif /* _FILE_TABLE_H_ */
