@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2025, Sam  https://github.com/SamKerubin/fview/tree/main/listener/include/file_table.c
+Copyright (c) 2025, Sam  https://github.com/SamKerubin/fview/blob/main/src/file_table.c
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -23,12 +23,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <stdio.h> /* perror */
 #include <stdlib.h> /* malloc, free */
-#include <string.h> /* strcpy */
+#include <string.h> /* strncpy */
 #include "file_table.h"
 
-int additem(struct _file **table, const char *filename, const uint32_t value, enum _event event) {
+int additem(struct _file **table, const char *filename, const uint32_t op_count, const uint32_t mod_count) {
     if (!filename || *filename == '\0') {
-        return 0;
+        return -1;
     }
 
     struct _file *item = NULL;
@@ -37,24 +37,21 @@ int additem(struct _file **table, const char *filename, const uint32_t value, en
         item = (struct _file *)malloc(sizeof(struct _file));
         if (item == NULL) {
             perror("malloc");
-            return 0;
+            return -1;
         }
 
         strncpy(item->key, filename, sizeof(item->key) - 1);
         item->key[sizeof(item->key) - 1] = '\0';
-        item->opening = 0U;
-        item->modifying = 0U;
+        item->opening = op_count;
+        item->modifying = mod_count;
         HASH_ADD_STR(*table, key, item);
+        return 1;
     }
 
-    if (event == F_OPENED) {
-        item->opening += value;
-    } else if (event == F_MODIFIED) {
-        item->modifying += value;
-    }
+    item->opening += op_count;
+    item->modifying += mod_count;
 
-
-    return 1;
+    return 0;
 }
 
 void clear_table(struct _file **table) {

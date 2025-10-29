@@ -43,14 +43,6 @@ struct _file {
 };
 
 /**
- * enum to describe which event has occured
- */
-enum _event {
-    F_OPENED, /** > when a file is opened */
-    F_MODIFIED /** > when a file is modified */
-};
-
-/**
  *  @brief given a key and a value, adds it to a table
  *  
  * adds a value to a given table struct, if key is already on the table
@@ -62,9 +54,9 @@ enum _event {
  * @param key key of the item being added (_file->key)
  * @param value value of the item being added (_file->value)
  * @param event type of the event (modified, openened)
- * @return exit code (0, 1)
+ * @return 1 if added, 0 if updated, -1 if failed
  */
-int additem(struct _file **table, const char *filename, const uint32_t value, enum _event event);
+int additem(struct _file **table, const char *filename, const uint32_t op_count, const uint32_t mod_count);
 
 /** 
  * @brief frees all the values stored in a table

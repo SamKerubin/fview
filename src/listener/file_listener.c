@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2025, Sam  https://github.com/SamKerubin/fview/tree/main/listener/file_listener.c
+Copyright (c) 2025, Sam  https://github.com/SamKerubin/fview/blob/main/src/listener/file_listener.c
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -23,66 +23,48 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #define _GNU_SOURCE
 #include <stdio.h> /* perror, snprintf, ssize_t, remove */
-#include <stdlib.h> /* exit, EXIT_SUCCESS, EXIT_FAILURE, malloc, free, strtol */
+#include <stdlib.h> /* malloc, free, strtol, EXIT_SUCCESS, EXIT_FAILURE */
 #include <unistd.h> /* readlink */
 #include <sys/fanotify.h> /* fanotify_init, fanotify_mark, fanotify_event_metadata, all the macros starting with FAN */
 #include <sys/stat.h> /* mkdir, stat */
 #include <syslog.h> /* syslog, openlog, closelog, all the macros starting with LOG */
 #include <time.h> /* time */
 #include <fcntl.h> /* creat, O_RDONLY, O_LARGEFILE AT_FDCWD */
-#include <string.h> /* strerror, strcmp, strncmp */
+#include <string.h> /* strerror, strcmp, strncmp, strncpy */
 #include <signal.h> /* sigaction, sigemptyset, sa_handler, SIGTERM, SIGKILL, SIGUSER1, SIGUSER2 */
 #include <errno.h> /* errno */
 #include <stdint.h> /* uint32_t, uint16_t, UINT32_MAX */
 #include <poll.h> /* poll, pollfd, POLLIN */
-#include "file_table.h" /* _file, additem, clean_table, HASH_ITER */
+#include "uthash.h" /* HASH_DEL, HASH_ITER */
+#include "file_table.h" /* _file, additem, clean_table */
 #include "strutils.h" /* splitstr */
 #include "fileutils.h" /* readfile, savefile, PATH_LENGTH */
 
-#define OPENED_PATH "/var/log/file-listener/opfiles" /* log file path for storing in disk opening events */
-#define MODIFIED_PATH "/var/log/file-listener/modfiles" /* log file path for storing in disk modifying events */
-#define BLACKLIST_PATH "/var/log/file-listener/file_listener.blacklist" /* file path for the blacklist file */
+#define SAVE_PATH "/var/log/file-listener/file-events" /* log file path for storing in disk file events recorded by fanotify */
+#define BLACKLIST_PATH "/var/log/file-listener/file-listener.blacklist" /* file path for the blacklist file */
 
-#define TMP_OPENED_PATH "/tmp/file-listener/opfiles/%u.tmp" /* temporary log file for storing in disk opening events */
-#define TMP_MODIFIED_PATH "/tmp/file-listener/modfiles/%u.tmp" /* temporary log file for storing in disk modifying events */
+#define TMP_FILE_PATH "/tmp/file-listener/%u.tmp" /* temporary log file for storing in disk file events recorded by fanotify */
 
 #define MAX_TMP_FILES 500 /* max temporary log files that can be created */
-#define MAX_TMP_SIZE 750 /* max items a temporary file can store before opening a new temporary file */
+#define MAX_TMP_SIZE 250 /* max items a temporary file can store before opening a new temporary file */
 
-#define INTERVAL_SEC 5 /* timout for each time the process saves data */
+#define INTERVAL_SEC 15 /* timout for each time the process saves data */
 
-/**
- * stores in memory a blacklist entry 
- * read from the blacklist file
- */
-struct blacklist_entry {
-    char path[PATH_LENGTH]; /** > path of the entry */
-    UT_hash_handle hh; /** hashable */
-};
+#define INT_BUFF_SIZE 11
 
 /**
- * struct used by the loadtable function
- * so it knows which field to update by its event
+ * struct that stores the count of items the blacklist currently holds
  */
-struct loader_element {
-    struct _file **table; /** > table storing all files */
-    const char *readingpath; /** > path of the file being loaded */
+struct blacklist_updater {
+    char ***blk_entries; /** > entries of the blacklist */
+    size_t count; /** > count of entries */
 };
 
 volatile sig_atomic_t running = 1; /* flag for the main loop */
 
-struct _file *file_table = NULL; /* stores file events in memory */
+char **blk_entries; /* list to store all the blacklist entries */
 
-uint16_t count_opening_tmp = 1; /* counter for the current amount of opening temporary files created */
-uint16_t count_modifying_tmp = 1; /* counter for the current amount of modifying temporary files created */
-
-uint16_t current_opening_size = 0; /* counter for the items the current opening temporary file has stored */
-uint16_t current_modifying_size = 0; /* counter for the itmes the current modifying temporary file has stored */
-
-int fan_fd; /* file descriptor of fanotify events */
-struct pollfd fds[1]; /* poll if fanotify recieves an event */
-
-struct blacklist_entry *blk_entries = NULL; /* table to store all the entries */
+uint16_t file_count = 1; /* counter for the current amount of opening temporary files created */
 
 /** 
  * @brief main loop of the process 
@@ -92,17 +74,20 @@ struct blacklist_entry *blk_entries = NULL; /* table to store all the entries */
  * each time an event is registered, saves it in a table
  *  
  * when reached a certain amount of saves, loads all the data to a permanent file
- * 
+ * @param file_table table that stores all the file events recorded
+ * @param fan_fd file descriptor of fanotify
  */
-static void loop(void);
+static void loop(struct _file **file_table, int fan_fd);
 
 /**
  * @brief pre-finish cleanup
  *  
  * prepares the process to finish,
  * it cleans the memory and saves all the allocated data
+ * @param file_table table that stores all the file events recorded
+ * @param fan_fd file descriptor of fanotify
  */
-static void clean_loop(void);
+static void clean_loop(struct _file **file_table, int fan_fd);
 
 /**
  * @brief signal handling
@@ -140,7 +125,7 @@ static void clear_blacklist(void);
  * if the path is equal to the line, it marks it as found
  * 
  * @param line the line that is going to be compared
- * @param arg blacklist structure that stored both the path and found flag
+ * @param arg struct that holds the entries of the blacklist and the count of the entries
  */
 static void blacklist_handler(char *line, void *arg);
 
@@ -184,10 +169,10 @@ static void loadtable_handler(char *line, void *arg);
  * in the process, it modifies the items in the table with each item added
  * 
  * @param path path of the file that is going to be read
- * @param loader struct to keep track of both the table and the current reading path
+ * @param table file table address
  * @return 1 if successful, 0 if failed
  */
-static int loadtable(const char* path, struct loader_element *loader);
+static int loadtable(const char* path, struct _file **table);
 
 /**
  * @brief returns the content of a table
@@ -195,10 +180,9 @@ static int loadtable(const char* path, struct loader_element *loader);
  * given a table, returns its content in a malloc'ed array
  * @param table table thats going to be read
  * @param out malloc'ed array that is going to be returned
- * @param event event that is going to indicate the function which field to save
  * @return amount of entries alloc'ed
  */
-static size_t get_file_content(struct _file **table, char ***out, enum _event event);
+static size_t get_file_content(struct _file **table, char ***out);
 
 /**
  * @brief saves a struct into disk
@@ -207,12 +191,11 @@ static size_t get_file_content(struct _file **table, char ***out, enum _event ev
  * truncates the file and re-writes the new content into it
  *  
  * @param table the struct that is going to be saved into disk
- * @param op_path path of the file which stores opened events that is going to be trunced
- * @param mod_path path of the file which stores modified events that is going to be trunced
+ * @param save_path path of the file where the entries are going to be stored in disk
  * @return 1 if successful, 0 if failed
  * 
  */
-static int savetable(struct _file **table, const char *op_path, const char *mod_path);
+static int savetable(struct _file **table, const char *save_path);
 
 /**
  * @brief merge all temporary files created into one single table
@@ -221,13 +204,10 @@ static int savetable(struct _file **table, const char *op_path, const char *mod_
  * and reads its content, after loading everything, 
  * saves the table into a permanent file path
  *  
- * @param path temporary file path
- * @param op_path path where all the temporary opened files are going to be stored
- * @param mod_path path where all the temporary modified files are going to be stored
- * @param tmp_count count of how many temporary files are there
- * @return exit code (0, 1)
+ * @param save_path path of the file where the entries are going to be stored in disk
+ * @return 1 if successful, 0 if failed
  */
-static int mergetmp(const char *path, const char *op_path, const char *mod_path, uint16_t *tmp_count);
+static int mergetmp(const char *save_path);
 
 /**
  * @brief custom signal handling
@@ -244,8 +224,9 @@ void mergeall(const int sig);
  * with the flags FAN_OPEN and FAN_MODIFY
  * 
  * @param path path where fanotify is going to be setted up
+ * @return file descriptor of fanotify
 */
-static void init_fanotify(const char *path);
+static int init_fanotify(const char *path);
 
 /**
  * @brief sets up the signals the daemon needs
@@ -270,19 +251,20 @@ static void setup_signals(void);
  *  
  * see macros:
  *  
- * - OPENED_PATH
- *  
- * - MODIFIED_PATH
+ * - SAVE_PATH
  *  
  * - BLACKLIST_PATH
  *  
- * - TMP_OPENED_PATH
- *  
- * - TMP_MODIFIED PATH
+ * - TMP_FILE_PATH
  */
 static void setup_files(void);
 
 int main(void) {
+    struct _file *file_table = NULL; /* stores file events in memory */
+    blk_entries = NULL;
+
+    int fan_fd; /* file descriptor of fanotify events */
+
     setup_signals();
 
     openlog("file_listener", LOG_PID | LOG_CONS, LOG_DAEMON);
@@ -291,19 +273,33 @@ int main(void) {
     setup_files();
     update_blacklist();
 
-    init_fanotify("/");
-
-    loop();
-    clean_loop();
-
+    fan_fd = init_fanotify("/");
+    if (fan_fd < 0) {
+        return EXIT_FAILURE;
+    }
+    
+    loop(&file_table, fan_fd);
+    clean_loop(&file_table, fan_fd);
+    
+    syslog(LOG_INFO, "Daemon has stopped.");
     closelog();
+
     return EXIT_SUCCESS;
 }
 
-static void loop(void) {
+static void loop(struct _file **file_table, int fan_fd) {
+    uint16_t content_count = 0; /* counter for the items the current temporary file has stored */
+
+    /* poll if fanotify recieves an event */
+    struct pollfd fds = {
+        .fd = fan_fd,
+        .events = POLLIN
+    };
+
     time_t last_save = time(NULL);
+
     while(running) {
-        int ret = poll(fds, 1, 1000);
+        int ret = poll(&fds, 1, 1000);
         if (ret == -1) {
             perror("poll");
             continue;
@@ -311,17 +307,15 @@ static void loop(void) {
 
         time_t now = time(NULL);
         if (now - last_save >= INTERVAL_SEC) {
-            char current_oppath[PATH_LENGTH];
-            char current_modpath[PATH_LENGTH];
+            char current_path[PATH_LENGTH];
 
-            snprintf(current_oppath, sizeof(current_oppath), TMP_OPENED_PATH, count_opening_tmp);
-            snprintf(current_modpath, sizeof(current_modpath), TMP_MODIFIED_PATH, count_modifying_tmp);
+            snprintf(current_path, sizeof(current_path), TMP_FILE_PATH, file_count);
 
-            savetable(&file_table, current_oppath, current_modpath);
+            savetable(file_table, current_path);
             last_save = now;
         }
 
-        if (ret < 0 || !(fds[0].revents & POLLIN))
+        if (ret < 0 || !(fds.revents & POLLIN))
             continue;
 
         struct fanotify_event_metadata buffer[200];
@@ -331,7 +325,7 @@ static void loop(void) {
             len = read(fan_fd, buffer, sizeof(buffer));
             if (len <= 0) break;
 
-            if (len < 0 && errno != EAGAIN) {
+            if (len == -1 && errno != EAGAIN) {
                 syslog(LOG_ERR, "Error: Couldnt read event metadata from file descriptior '%d'. -> %s", fan_fd, strerror(errno));
                 break;
             }
@@ -348,44 +342,34 @@ static void loop(void) {
                     close(meta->fd);
                     continue;
                 }
-                
 
                 if (path_in_blacklist(filepath)) {
                     close(meta->fd);
                     continue;
                 }
 
-                enum _event event = (meta->mask & FAN_OPEN) ? F_OPENED : F_MODIFIED;
-
-                uint16_t *content_count = (meta->mask & FAN_OPEN) ? &current_opening_size : &current_modifying_size;
-
-                additem(&file_table, filepath, 1U, event);
+                int added = (meta->mask & FAN_OPEN) ? additem(file_table, filepath, 1U, 0U) : additem(file_table, filepath, 0U, 1U);
+                if (added && added != -1)
+                    content_count++;
 
                 free(filepath);
-
-                if (*content_count < MAX_TMP_SIZE) {
-                    (*content_count)++;
+                if (content_count < MAX_TMP_SIZE) {
                     close(meta->fd);
                     continue;
                 }
 
-                char current_oppath[PATH_LENGTH];
-                char current_modpath[PATH_LENGTH];
+                char current_path[PATH_LENGTH];
+                snprintf(current_path, sizeof(current_path), TMP_FILE_PATH, file_count);
 
-                snprintf(current_oppath, sizeof(current_oppath), TMP_OPENED_PATH, count_opening_tmp);
-                snprintf(current_modpath, sizeof(current_modpath), TMP_MODIFIED_PATH, count_modifying_tmp);
+                savetable(file_table, current_path);
+                clear_table(file_table);
 
-                savetable(&file_table, current_oppath, current_modpath);
-                clear_table(&file_table);
+                content_count = 0;
 
-                *content_count = 0;
-                
-                uint16_t *file_count = (meta->mask & FAN_OPEN) ? &count_opening_tmp : &count_modifying_tmp;
-                if (*file_count < MAX_TMP_FILES) {
-                    (*file_count)++;
+                if (file_count < MAX_TMP_FILES) {
+                    file_count++;
                 } else {
-                    char *path = (meta->mask & FAN_OPEN) ? TMP_OPENED_PATH : TMP_MODIFIED_PATH;
-                    mergetmp(path, OPENED_PATH, MODIFIED_PATH, file_count);
+                    mergetmp(SAVE_PATH);
                 }
 
                 close(meta->fd);
@@ -394,65 +378,80 @@ static void loop(void) {
     }
 }
 
-static void clean_loop(void) {
-    syslog(LOG_INFO, "Daemon has stopped.");
-    mergetmp(TMP_OPENED_PATH, OPENED_PATH, MODIFIED_PATH, &count_opening_tmp);
-    mergetmp(TMP_MODIFIED_PATH, OPENED_PATH, MODIFIED_PATH, &count_modifying_tmp);
-    clear_table(&file_table);
+static void clean_loop(struct _file **file_table, int fan_fd) {
+    mergetmp(SAVE_PATH);
+    clear_table(file_table);
+    clear_blacklist();
     close(fan_fd);
 }
 
 static void loadtable_handler(char *line, void *arg) {
-    struct loader_element *loader = (struct loader_element *)arg;
+    struct _file **table = (struct _file **)arg;
 
     char **splitted_line = NULL;
     size_t count = splitstr(line, ':', &splitted_line);
-    if (splitted_line == NULL || splitted_line[0] == NULL || splitted_line[1] == NULL) {
-        return;
-    }
+    if (splitted_line == NULL       || 
+        splitted_line[0] == NULL    || 
+        splitted_line[1] == NULL    ||
+        splitted_line[2] == NULL)
+        goto clean_splitted;
 
-    if (count != 2) {
+    if (count != 3) {
         goto clean_splitted;
     }
 
-    char key[PATH_LENGTH];
-    char value_str[PATH_LENGTH];
-    strcpy(key, splitted_line[0]);
-    strcpy(value_str, splitted_line[1]);
+    char filename[PATH_LENGTH];
+    char op_str[INT_BUFF_SIZE];
+    char mod_str[INT_BUFF_SIZE];
+
+    strncpy(filename, splitted_line[0], PATH_LENGTH - 1);
+    filename[PATH_LENGTH - 1] = '\0';
+    
+    strncpy(op_str, splitted_line[1], INT_BUFF_SIZE - 1);
+    op_str[INT_BUFF_SIZE - 1] = '\0';
+
+    strncpy(mod_str, splitted_line[2], INT_BUFF_SIZE - 1);
+    mod_str[INT_BUFF_SIZE - 1] = '\0';
 
     char *endptr;
-    long tmp = strtol(value_str, &endptr, 10);
-    if (endptr == value_str) {
+    long tmp_op = strtol(op_str, &endptr, 10);
+    long tmp_mod = strtol(mod_str, &endptr, 10);
+
+    if (endptr == op_str || endptr == mod_str) {
         syslog(LOG_ERR, "Hmmm, are you modifying the files, arent you?. Non-numeric value encountered.\n");
         goto clean_splitted;
     }
 
-    if (tmp > UINT32_MAX)
-        tmp = UINT32_MAX;
+    if (tmp_op > UINT32_MAX)
+        tmp_op = UINT32_MAX;
+    
+    if (tmp_mod > UINT32_MAX)
+        tmp_mod = UINT32_MAX;
 
-    uint32_t value = (uint32_t)tmp;
+    uint32_t op_count = (uint32_t)tmp_op;
+    uint32_t mod_count = (uint32_t)tmp_mod;
 
-    int is_opening = strncmp(loader->readingpath, TMP_OPENED_PATH, 21) == 0;
-    enum _event event = (is_opening) ? F_OPENED : F_MODIFIED;
-    additem(loader->table, key, value, event);
-
+    additem(table, filename, op_count, mod_count);
 
     clean_splitted:
-        for (size_t i = 0; splitted_line[i] != NULL; i++) {
+        if (!splitted_line) return;
+
+        for (size_t i = 0; splitted_line[i]; i++) {
             free(splitted_line[i]);
         }
 
         free(splitted_line);
 }
 
-static int loadtable(const char* path, struct loader_element *loader) {
-    return readfile(path, loadtable_handler, loader);
+static int loadtable(const char* path, struct _file **table) {
+    return readfile(path, loadtable_handler, table);
 }
 
-static size_t get_file_content(struct _file **table, char ***out, enum _event event) {
+static size_t get_file_content(struct _file **table, char ***out) {
     *out = (char **)malloc(sizeof(char *));
     if (!*out) {
         perror("malloc");
+        *out = NULL;
         return 0;
     }
 
@@ -475,168 +474,138 @@ static size_t get_file_content(struct _file **table, char ***out, enum _event ev
             continue;
         }
 
-        uint32_t count;
-        if (event == F_OPENED) {
-            count = item->opening;
-        } else {
-            count = item->modifying;
-        }
+        uint32_t op_count = item->opening;
+        uint32_t mod_count = item->modifying;
 
-        if (count <= 0)
-            continue;
-        
         char entry[PATH_LENGTH];
-        snprintf(entry, sizeof(entry), "%s:%u\n", filename, count);
-        
-        char **tmp = (char **)realloc(*out, sizeof(char *) * (size + 1));
+        snprintf(entry, sizeof(entry), "%s:%u:%u\n", filename, op_count, mod_count);
+
+        char **tmp = (char **)realloc(*out, sizeof(char *) * (size + 2));
         if (!tmp) {
             perror("realloc");
+        
+            for (size_t i = 0; (*out)[i]; i++) {
+                free((*out)[i]);
+            }
+            free(*out);
+
+            *out = NULL;
             return 0;
         }
-        
+
         tmp[size++] = strdup(entry);
+        tmp[size] = NULL;
         *out = tmp;
     }
 
-    char **final = (char **)realloc(*out, sizeof(char *) * (size + 1));
-    if (!final) {
-        perror("realloc");
-        for (size_t i = 0; *out[i] != NULL; i++) {
-            free(*out[i]);
-        }
-
-        free(*out);
-        return 0;
-    }
-
-    final[size] = NULL;
-    *out = final;
     return size;
 }
 
-static int savetable(struct _file **table, const char *op_path, const char *mod_path) {
+static int savetable(struct _file **table, const char *path) {
     if (*table == NULL) {
         return 0;
     }
 
-    int r_op, r_mod = -1;
-
-    char **op_content = NULL;
-    get_file_content(table, &op_content, F_OPENED);
-    if (!op_content) {
-        goto clean_content;
-    }
-
-    char **mod_content = NULL;
-    get_file_content(table, &mod_content, F_MODIFIED);
-    if (!mod_content) {
-        goto clean_content;
-    }
-
-    r_op = savefile(op_path, op_content, 1);
-    r_mod = savefile(mod_path, mod_content, 1);
-
-    clean_content:
-        for (size_t i = 0; op_content[i]; i++) {
-            free(op_content[i]);
-        }
-        free(op_content);
-
-        for (size_t i = 0; mod_content[i]; i++) {
-            free(mod_content[i]);
-        }
-        free(mod_content);
-
-        if (r_op != -1 && r_mod != -1)
-            return r_op && r_mod;
+    char **content = NULL;
+    get_file_content(table, &content);
+    if (!content) {
         return 0;
+    }
+
+    int r = savefile(path, content, 1);
+
+    for (size_t i = 0; content[i]; i++) {
+        free(content[i]);
+    }
+    free(content);
+
+    return r;
 }
 
-static int mergetmp(const char *path, const char *op_path, const char *mod_path, uint16_t *tmp_count) {
+static int mergetmp(const char *save_path) {
     struct _file *merged_table = NULL;
 
-    struct loader_element loader = {
-        .table = &merged_table,
-        .readingpath = path
-    };
-
-    for (uint16_t i = 1; i <= *tmp_count; i++) {
+    for (uint16_t i = 1; i <= file_count; i++) {
         char realpath[PATH_LENGTH];
-        snprintf(realpath, sizeof(realpath), path, i);
+        snprintf(realpath, sizeof(realpath), TMP_FILE_PATH, i);
         
-        loadtable(realpath, &loader);
+        loadtable(realpath, &merged_table);
         remove(realpath);
     }
 
-    *tmp_count = 1;
+    file_count = 1;
 
-    int r = savetable(&merged_table, op_path, mod_path);
+    int r = savetable(&merged_table, save_path);
     clear_table(&merged_table);
     return r;
 }
 
-void mergeall(const int sig) {
-    syslog(LOG_INFO, "Signal %s recieved, merging content...", strsignal(sig));
-
-    mergetmp(TMP_OPENED_PATH, OPENED_PATH, MODIFIED_PATH, &count_opening_tmp);
-    mergetmp(TMP_MODIFIED_PATH, OPENED_PATH, MODIFIED_PATH, &count_modifying_tmp);
-}
-
-static void clear_blacklist(void) {
-    struct blacklist_entry *item, *tmp;
-    HASH_ITER(hh, blk_entries, item, tmp) {
-        HASH_DEL(blk_entries, item);
-        free(item);
-    }
-
-    blk_entries = NULL;
-}
-
 static void blacklist_handler(char *line, void *arg) {
-    struct blacklist_entry **blk_entries = (struct blacklist_entry **)arg;
+    struct blacklist_updater *updater = (struct blacklist_updater *)arg;
 
-    struct blacklist_entry *item = (struct blacklist_entry *)malloc(sizeof(struct blacklist_entry));
-    if (!item) {
+    char **tmp = (char **)realloc(*(updater->blk_entries), sizeof(char *) * (updater->count + 2));
+    if (!tmp) {
         perror("malloc");
         clear_blacklist();
         return;
     }
 
-    char path[PATH_LENGTH];
-    strcpy(item->path, line);
-    strcpy(path, line);
-
-    HASH_ADD_STR(*blk_entries, path, item);
+    tmp[updater->count] = strdup(line);
+    tmp[++(updater->count)] = NULL;
+    *(updater->blk_entries) = tmp;
 }
 
 static int update_blacklist(void) {
     clear_blacklist();
-    return readfile(BLACKLIST_PATH, blacklist_handler, &blk_entries);
+
+    blk_entries = (char **)calloc(1, sizeof(char *));
+    if (!blk_entries) {
+        perror("calloc");
+        return 0;
+    }
+
+    struct blacklist_updater blk_updater = {
+        .blk_entries = &blk_entries,
+        .count = 0UL
+    };
+
+    return readfile(BLACKLIST_PATH, blacklist_handler, &blk_updater);
+}
+
+static void clear_blacklist(void) {
+    if (!blk_entries) return;
+
+    for (size_t i = 0; blk_entries[i]; i++) {
+        free(blk_entries[i]);
+    }
+    free(blk_entries);
+
+    blk_entries = NULL;
 }
 
 static int path_in_blacklist(const char *path) {
     /* paths that must be ignored regardless the blacklist file content */
-    if (strcmp(path, OPENED_PATH) == 0                  || 
-            strcmp(path, MODIFIED_PATH) == 0            ||
+    if (strcmp(path, SAVE_PATH) == 0                    || 
             strcmp(path, BLACKLIST_PATH) == 0           ||
-            strncmp(path, TMP_OPENED_PATH, 21) == 0     ||
-            strncmp(path, TMP_MODIFIED_PATH, 21) == 0   ||
+            strncmp(path, TMP_FILE_PATH, 21) == 0       ||
             strncmp(path, "/proc/", 6) == 0             ||
             strncmp(path, "/dev/", 6) == 0              ||
             strncmp(path, "/sys/", 6) == 0              ||
             strncmp(path, "/run/", 6) == 0)
         return 1;
 
-    int found = 0;
-    struct blacklist_entry *item, *tmp;
-    HASH_ITER(hh, blk_entries, item, tmp) {
-        if (strncmp(item->path, path, strlen(item->path)) == 0) {
-            found = 1;
-            break;
+    for (size_t i = 0; blk_entries[i]; i++) {
+        if (strncmp(blk_entries[i], path, strlen(blk_entries[i])) == 0) {
+            return 1;
         }
     }
-    
-    return found;
+
+    return 0;
+}
+
+static void terminate(const int sig) {
+    syslog(LOG_INFO, "Signal %s recieved, stopping process.", strsignal(sig));
+    running = 0;
 }
 
 static void updateblk(const int sig) {
@@ -644,9 +613,9 @@ static void updateblk(const int sig) {
     update_blacklist();
 } 
 
-static void terminate(const int sig) {
-    syslog(LOG_INFO, "Signal %s recieved, stopping process.", strsignal(sig));
-    running = 0;
+void mergeall(const int sig) {
+    syslog(LOG_INFO, "Signal %s recieved, merging content...", strsignal(sig));
+    mergetmp(SAVE_PATH);
 }
 
 static int getfilepath(const int fd, char *buff, size_t size) {
@@ -661,12 +630,11 @@ static int getfilepath(const int fd, char *buff, size_t size) {
     return 0;
 }
 
-static void init_fanotify(const char *path) {
-    fan_fd = fanotify_init(FAN_CLOEXEC | FAN_CLASS_NOTIF, O_RDONLY | O_LARGEFILE);
+static int init_fanotify(const char *path) {
+    int fan_fd = fanotify_init(FAN_CLOEXEC | FAN_CLASS_NOTIF, O_RDONLY | O_LARGEFILE);
     if (fan_fd == -1) {
         syslog(LOG_ERR, "Error: Couldnt initialize fanotify. -> %s", strerror(errno));
-        clean_loop();
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     if (fanotify_mark(fan_fd,
@@ -675,12 +643,11 @@ static void init_fanotify(const char *path) {
                         AT_FDCWD,
                         path) == -1) {
         syslog(LOG_ERR, "Error: Couldnt mark mount point to fanotify in '%s' -> %s", path, strerror(errno));
-        clean_loop();
-        exit(EXIT_FAILURE);
+        close(fan_fd);
+        return -1;
     }
 
-    fds[0].fd = fan_fd;
-    fds[0].events = POLLIN;
+    return fan_fd;
 }
 
 static void setup_signals(void) {
@@ -709,30 +676,18 @@ static void setup_files(void) {
     struct stat st;
 
     if (stat("/var/log/file-listener", &st) == -1) {
-        mkdir("/var/log/file-listener", 0644);
+        mkdir("/var/log/file-listener", 0744);
     }
     
-    if (stat(OPENED_PATH, &st) == -1) {
-        creat(OPENED_PATH, 0644);
+    if (stat(SAVE_PATH, &st) == -1) {
+        creat(SAVE_PATH, 0644);
     }
-    
-    if (stat(MODIFIED_PATH, &st) == -1) {
-        creat(MODIFIED_PATH, 0644);
-    }
-    
+
     if (stat(BLACKLIST_PATH, &st) == -1) {
         creat(BLACKLIST_PATH, 0644);
     }
 
     if (stat("/tmp/file-listener", &st) == -1) {
-        mkdir("/tmp/file-listener", 0644);
-    }
-    
-    if (stat("/tmp/file-listener/opfiles", &st) == -1) {
-        mkdir("/tmp/file-listener/opfiles", 0644);
-    }
-    
-    if (stat("/tmp/file-listener/modfiles", &st) == -1) {
-        mkdir("/tmp/file-listener/modfiles", 0644);
+        mkdir("/tmp/file-listener", 0744);
     }
 }

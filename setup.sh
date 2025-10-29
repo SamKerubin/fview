@@ -16,16 +16,16 @@ gcc $compile_flags src/fview.c -Iinclude -lprocutils -o fview
 gcc $compile_flags src/listener/file_listener.c src/file_table.c -Iinclude -lfileutils -lstrutils -o file-listener
 gcc $compile_flags src/listener/listener_blacklist/addflblk.c -Iinclude -lprocutils -lfileutils -o addflblk
 
-echo "Giving executing permissions to file-listener..."
-sudo chmod -v 755 file-listener
-sudo restorecon -v file-listener
-
 echo "Moving file-listener to '/usr/sbin'..."
 sudo mv -v file-listener /usr/sbin
 echo "Moving fview to '/usr/local/bin'..."
 sudo mv -v fview /usr/local/bin
 echo "Moving addflblk to 'usr/local/bin'..."
 sudo mv -v addflblk /usr/local/bin
+
+echo "Giving executing permissions to file-listener..."
+sudo chmod -v 755 /usr/sbin/file-listener
+sudo restorecon -v /usr/sbin/file-listener
 
 echo "Creating service file in '/etc/systemd/system'"
 sudo touch $service_file

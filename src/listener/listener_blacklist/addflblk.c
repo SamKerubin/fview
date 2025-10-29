@@ -1,3 +1,26 @@
+/*
+Copyright (c) 2025, Sam  https://github.com/SamKerubin/fview/blob/main/src/listener/listener_blacklist/addflblk.c
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER
+OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h> /* fprintf, stderr, stdout */
 #include <stdlib.h> /* EXIT_SUCCESS, EXIT_FAILURE, malloc, realloc, free, calloc */
@@ -11,7 +34,7 @@
 #include "fileutils.h" /* readfile, savefile, appendline */
 #include "procutils.h" /* getpid_by_name */
 
-#define BLACKLIST_PATH "/var/log/file-listener/file_listener.blacklist" /* file path for the blacklist file */
+#define BLACKLIST_PATH "/var/log/file-listener/file-listener.blacklist" /* file path for the blacklist file */
 
 #define FILE_LISTENER_NAME "file-listener"
 
@@ -65,7 +88,7 @@ static int readblacklist(char *dirpath, char ***list, size_t *count, int *found_
     if (*list == NULL) {
         *list = (char **)calloc(1, sizeof(char *));
         if (*list == NULL) {
-            perror("malloc");
+            perror("calloc");
             return 0;
         }
     }
