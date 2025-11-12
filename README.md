@@ -1,90 +1,101 @@
 # fview
 
-_NOTE: this README might not be up to date_
+_**Important note: This project is a set of 3 tools, `fview` being the spotlight. Each tool is there to help each other; it is recommendable to have all 3 for an expected behavior**_
 
-`fview` its command for a Linux-based OS.
-Its used to keep track of the usage of files in a directory.
+## How to use?
 
-## How does it work?
+Simply execute this [script](setup.sh). If you have any problem executing it, remember to change the permissions of the file:
 
-Requires a directory path to open it.
-This command works along side a [daemon](listener/file_listener.c). You need to execute it as a startup
-process to start recording file operations.
-
-Please, execute the script `setup.sh` to make this command 100% functional.
-
-```bash
-fview /home/user
+```sh
+chmod +x setup.sh
 ```
 
-## What should it return?
+### Information about `setup.sh`
 
-If the command is execute without flags, it will return by default a file that matches all these conditions:
+The script sets the files to their corresponding place. It compiles the source code and also copies and enables custom [shared libraries](https://github.com/SamKerubin/CLibs).
 
-- Most times modified
-- Most times opened
+By default, the script wont start [file-listener](src/listener/file_listener.c) daemon, if you want to automatically start it with the setup, 
+use the flag `-s`:
 
-After selecting a file that matches both conditions, returns the next information:
-
-- File name
-- File extension
-- File path
-- File permission bits
-- File weight (in MB)
-- Times it has been modified \- Last time modified
-- TImes it has been opened \- Last time opened
-
-```txt
-Name: file
-Extension: txt
-Path: ~/Documents
-Permission: 0777
-Weight: 0.057 MB
-Times modified: 5 - Last modification: 2025-09-30 12:00:00 -0500
-Times opened: 4 - Last time opened: 2025-09-30 12:00:00 -0500
+```sh 
+sh setup.sh -s # starts the daemon automatically
 ```
 
-## Flags
+If you dont want to automatically start the daemon, simply execute:
 
-The behavior of the command will depend on the flag used as well.
-Among the most important flags this command use we have:
-
-`-m`: Only searchs for the most modified file.
-`-o`: Only searchs for the most opened file.
-`-l`: Searchs for the smallest file.
-`-h`: Searchs for the biggest file.
-
-Executing the command with the flags `-moh` is the same as executing it without any flags.
-Each flag is a condition a certain file must match to be shown.
-
-```bash
-fview /home/user -ml
+```sh
+sh setup.sh
 ```
 
-### Other flags
+## General information about the purpose of this set of tools
 
-Besides the flags already mentioned, there are also some other thare are quite helpful:
+The purpose of this set of tools is to provide a way of keep track to file accessing.
 
-`-v`: Verbose output.
-`-r`: Inspects recursively each subdirectory a parent directory has.
-`-n`: Specifies a range of files to be shown.
+### file-listener
 
-#### Example
+`file-listener` is a systemd daemon which purpose is to record file events on the entire system (from the root `/` directory).
 
-```bash
-fview /home/user -mo -n 5
+This daemon uses [fanotify](https://www.man7.org/linux/man-pages/man7/fanotify.7.html) C library to record events such as opening or modifying a file.
+
+You can manually check its activity on the file: `/var/log/file-listener/file-events`.
+
+### addflblk
+
+`addflblk` is a shell command which purpose is to add elements to a "blacklist".
+
+The purpose of this, is to have a complete management of which paths `file-listener` daemon should expect activity from.
+
+Paths excluded from activity recording are stored in: `/var/log/file-listener/file-listener.blacklist`.
+
+#### Flag information
+
+- `-r` `--remove`: Tries to remove a path if its already stored in the blacklist.
+- `-v` `--verbose`: Displays verbose information about what the command is doing.
+- `-h` `--help`: Displays a help message for the command.
+
+#### Use example
+
+```sh
+addflblk /home/user # adds a path to the blacklist
 ```
 
-```txt
-Name: file1
-Extension: txt
-Path: /home/user
-Permission bits: 0500
-Weight: 0.040 MB
-Times modified: 10 - Last modification: 2025-09-30 12:00:00 -0500
-Times opened: 20 - Last time opened: 2025-09-30 12:00:00 -0500
+### fview
 
-.
-.
-.
+`fview` is another shell command, its purpose is to search file(s) inside a directory that matches a condition.
+Each condition is driven by what `file-listener` records.
+
+For being more specific, the condition match depends on the amount of times a file has been modified/opened; 
+it will search for files that have the biggest amount of events recorded.
+
+#### Flag information
+
+- `-o` `--opened`: Adds a condition to the match. The condition will now search for the biggest "opened" value.
+- `-m` `--modified`: Adds a condition to the match. The condition will now search for the biggest "modified" value.
+- `-n` `--range`: _(requires argument)_ Max output of files printed (1 by default).
+- `-a` `--show-metadata`: Show file metadata.
+- `-v` `--verbose`: Displays verbose information about what the command is doing.
+- `-h` `--help`: Displays a help message for the command.
+
+#### Use example
+
+```sh
+fview /home/user # Displays the first file that matches inside the directory, without checking other conditions
 ```
+
+```sh
+fview /home/user -mo # Displays the first file that matches being the biggest value in both "opened" and "modified"
+```
+
+## Thats all
+
+Well, thats all for now :3
+
+Thanks for being interested in using this tool. Please be aware:
+
+- This is my first linux tool, i tried my best on making it as good as possible in performance.
+- If you find any issue, immediately notify me about it to start working on it!
+- Any suggestion is always welcomed :3
+
+See ya soon!!
+
+And hope you enjoy using this awesome set of tools :3

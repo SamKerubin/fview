@@ -48,9 +48,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define MAX_TMP_FILES 500 /* max temporary log files that can be created */
 #define MAX_TMP_SIZE 250 /* max items a temporary file can store before opening a new temporary file */
 
+#define MAX_COUNT 5 /* max temporary files procesed at once */
+
 #define INTERVAL_SEC 15 /* timout for each time the process saves data */
 
-#define INT_BUFF_SIZE 11
+#define INT_BUFF_SIZE 11 /* size for buffers that holds integer values to be parsed */
 
 /**
  * struct that stores the count of items the blacklist currently holds
@@ -506,9 +508,14 @@ static int savetable(struct _file **table, const char *path) {
         return 0;
     }
 
-    char **content = NULL;
-    get_file_content(table, &content);
+    char **content;
+    size_t count = get_file_content(table, &content);
     if (!content) {
+        return 0;
+    }
+
+    if (count == 0) {
+        free(content);
         return 0;
     }
 
@@ -525,18 +532,31 @@ static int savetable(struct _file **table, const char *path) {
 static int mergetmp(const char *save_path) {
     struct _file *merged_table = NULL;
 
+    int r = 1;
+
+    uint16_t count = 0;
     for (uint16_t i = 1; i <= file_count; i++) {
         char realpath[PATH_LENGTH];
         snprintf(realpath, sizeof(realpath), TMP_FILE_PATH, i);
-        
-        loadtable(realpath, &merged_table);
+    
+        r &= loadtable(realpath, &merged_table);
         remove(realpath);
+
+        count++;
+        if (count >= MAX_COUNT) {
+            r &= savetable(&merged_table, save_path);
+            clear_table(&merged_table);
+            count = 0;
+        }
     }
 
     file_count = 1;
+    
+    if (count != 0) {
+        r &= savetable(&merged_table, save_path);
+        clear_table(&merged_table);
+    }
 
-    int r = savetable(&merged_table, save_path);
-    clear_table(&merged_table);
     return r;
 }
 
@@ -587,7 +607,7 @@ static int path_in_blacklist(const char *path) {
     /* paths that must be ignored regardless the blacklist file content */
     if (strcmp(path, SAVE_PATH) == 0                    || 
             strcmp(path, BLACKLIST_PATH) == 0           ||
-            strncmp(path, TMP_FILE_PATH, 21) == 0       ||
+            strncmp(path, TMP_FILE_PATH, 20) == 0       ||
             strncmp(path, "/proc/", 6) == 0             ||
             strncmp(path, "/dev/", 6) == 0              ||
             strncmp(path, "/sys/", 6) == 0              ||

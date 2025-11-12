@@ -74,7 +74,6 @@ int main(int argc, char *argv[]) {
 
     /* if neither of op or mod are active, returns all the matches found without filtering */
     int op, mod = 0;
-    int big, small = 0;
 
     int metadata = 0;
     int verbose = 0;
@@ -86,8 +85,6 @@ int main(int argc, char *argv[]) {
     struct option long_ops[] = {
         {"opened", no_argument, NULL, 'o'},
         {"modified", no_argument, NULL, 'm'},
-        {"biggest", no_argument, NULL, 'M'},
-        {"smallest", no_argument, NULL, 'l'},
         {"range", required_argument, NULL, 'n'},
         {"verbose", no_argument, NULL, 'v'},
         {"show-metadata", no_argument, NULL, 'a'},
@@ -95,12 +92,10 @@ int main(int argc, char *argv[]) {
         {0, 0, 0, 0}
     };
     
-    while ((opt = getopt_long(argc, argv, "molMvan:h", long_ops, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "movan:h", long_ops, NULL)) != -1) {
         switch (opt) {
             case 'm': mod = 1; break;
             case 'o': op = 1; break;
-            case 'M': big = 1; break;
-            case 'l': small = 1; break;
             case 'n':
                 char *endptr;
                 long tmp = strtol(optarg, &endptr, 10);
@@ -137,9 +132,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Directory path expected.\n");
         return EXIT_FAILURE;
     }
-
-    if (big && small)
-        small = 0;
     
     emit_signal();
 
