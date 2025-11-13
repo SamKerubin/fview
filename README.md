@@ -2,31 +2,6 @@
 
 _**Important note: This project is a set of 3 tools, `fview` being the spotlight. Each tool is there to help each other; it is recommendable to have all 3 for an expected behavior**_
 
-## How to use?
-
-Simply execute this [script](setup.sh). If you have any problem executing it, remember to change the permissions of the file:
-
-```sh
-chmod +x setup.sh
-```
-
-### Information about `setup.sh`
-
-The script sets the files to their corresponding place. It compiles the source code and also copies and enables custom [shared libraries](https://github.com/SamKerubin/CLibs).
-
-By default, the script wont start [file-listener](src/listener/file_listener.c) daemon, if you want to automatically start it with the setup, 
-use the flag `-s`:
-
-```sh 
-sh setup.sh -s # starts the daemon automatically
-```
-
-If you dont want to automatically start the daemon, simply execute:
-
-```sh
-sh setup.sh
-```
-
 ## General information about the purpose of this set of tools
 
 The purpose of this set of tools is to provide a way of keep track to file accessing.
@@ -84,6 +59,31 @@ fview /home/user # Displays the first file that matches inside the directory, wi
 
 ```sh
 fview /home/user -mo # Displays the first file that matches being the biggest value in both "opened" and "modified"
+```
+
+## How to use?
+
+Simply execute this [script](setup.sh). If you have any problem executing it, remember to change the permissions of the file:
+
+```sh
+chmod +x setup.sh
+```
+
+### Information about `setup.sh`
+
+The script sets the files to their corresponding place. It compiles the source code and also copies and enables custom [shared libraries](https://github.com/SamKerubin/CLibs).
+
+By default, the script wont start [file-listener](src/listener/file_listener.c) daemon, if you want to automatically start it with the setup, 
+use the flag `-s`:
+
+```sh 
+sh setup.sh -s # starts the daemon automatically
+```
+
+If you dont want to automatically start the daemon, simply execute:
+
+```sh
+sh setup.sh
 ```
 
 ## Thats all
